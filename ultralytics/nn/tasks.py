@@ -84,6 +84,10 @@ from ultralytics.nn.modules import (
     SimAM,
     SimConv,
     DSC,
+    PConv,
+    FasterBlock,
+    EMA,
+    Fast_C2f_EMA,
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, LOGGER, SETTINGS, WINDOWS, YAML, colorstr, emojis
 from ultralytics.utils.checks import REMOTE_FILE_PREFIXES, check_file, check_requirements, check_suffix, check_yaml
@@ -1645,6 +1649,7 @@ def parse_model(d, ch, verbose=True):
             C2fCIB,
             A2C2f,
             SimSPPF,
+            Fast_C2f_EMA
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments
@@ -1654,6 +1659,7 @@ def parse_model(d, ch, verbose=True):
             C2,
             C2f,
             C2f_DSC,
+            Fast_C2f_EMA,
             C3k2,
             C2fAttn,
             C3,

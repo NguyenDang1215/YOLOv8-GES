@@ -60,7 +60,11 @@ from .block import (
     ResNetLayer,
     SCDown,
     TorchVision,
-    SimSPPF
+    SimSPPF,
+    PConv,
+    FasterBlock,
+    EMA,
+    Fast_C2f_EMA,
 )
 from .conv import (
     CBAM,
@@ -202,4 +206,8 @@ __all__ = (
     "YOLOESegment26",
     "v10Detect",
     "SimSPPF",
+    "PConv",
+    "FasterBlock",
+    "EMA",
+    "Fast_C2f_EMA"
 )
