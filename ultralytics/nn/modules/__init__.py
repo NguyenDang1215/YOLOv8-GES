@@ -64,7 +64,7 @@ from .block import (
     PConv,
     FasterBlock,
     EMA,
-    Fast_C2f_EMA,
+    Fast_C2f,
 )
 from .conv import (
     CBAM,
@@ -209,5 +209,5 @@ __all__ = (
     "PConv",
     "FasterBlock",
     "EMA",
-    "Fast_C2f_EMA"
+    "Fast_C2f"
 )

@@ -57,7 +57,7 @@ __all__ = (
     "PConv",
     "FasterBlock",
     "EMA",
-    "Fast_C2f_EMA"
+    "Fast_C2f"
 )
 
 
@@ -2250,23 +2250,16 @@ class EMA(nn.Module):
         return (group_x * weights.sigmoid()).reshape(b, c, h, w)
 
 
-class Fast_C2f_EMA(nn.Module):
-    """Khối Fast_C2f_EMA hoàn chỉnh phục vụ bài toán nén mô hình Edge."""
+class Fast_C2f(nn.Module):
+    # Khối Fast-C2f ứng dụng trong YOLO
     def __init__(self, c1, c2, n=1, shortcut=False, g=1, e=0.5):
         super().__init__()
         self.c = int(c2 * e) 
         self.cv1 = Conv(c1, 2 * self.c, 1, 1)
         self.cv2 = Conv((2 + n) * self.c, c2, 1)
-        
-        # Giữ nguyên cấu hình đầu vào/đầu ra cho FasterBlock của bạn
         self.m = nn.ModuleList(FasterBlock(self.c, self.c) for _ in range(n))
-        
-        # Nhúng cơ chế chú ý EMA vào đầu ra cuối cùng của khối C2f trước khi chuyển tiếp lớp
-        self.ema = EMA(c2)
 
     def forward(self, x):
         y = list(self.cv1(x).chunk(2, 1))
         y.extend(m(y[-1]) for m in self.m)
-        
-        # Gom đặc trưng dày đặc -> Nén qua cv2 -> Tái lập trọng số bằng mạng chú ý EMA
-        return self.ema(self.cv2(torch.cat(y, 1)))
+        return self.cv2(torch.cat(y, 1))
