@@ -52,6 +52,8 @@ __all__ = (
     "ResNetLayer",
     "SCDown",
     "TorchVision",
+    "Bottleneck_DSC",
+    "C2f_DSC"
 )
 
 
@@ -2092,3 +2094,54 @@ class SimSPPF(nn.Module):
         out = torch.cat([x, y1, y2, y3], 1)
         out = self.simam(out)
         return self.cv2(out)
+    
+#new module for paper
+class Bottleneck_DSC(nn.Module):
+    """Cấu trúc tinh gọn: Tránh lặp Pointwise liên tiếp"""
+    def __init__(self, c1, c2, shortcut=True, g=1, k=((3, 3), (3, 3)), e=1.0):
+        super().__init__()
+        # c1 và c2 luôn bằng nhau trong C2f (vì e=1.0 bên ngoài)
+        
+        # Lớp 1: Chỉ làm nhiệm vụ lọc không gian thuần túy (Depthwise)
+        self.cv1 = DWConv(c1, c1, k[0], 1) 
+        
+        # Lớp 2: Dùng Conv 1x1 tiêu chuẩn để TRỘN KÊNH mạnh mẽ (Pointwise)
+        self.cv2 = Conv(c1, c2, 1, 1) 
+        
+        self.add = shortcut and c1 == c2
+
+    def forward(self, x):
+        return x + self.cv2(self.cv1(x)) if self.add else self.cv2(self.cv1(x))
+
+class C2f_DSC(nn.Module):
+    """Khối C2f cải tiến hoàn toàn mới áp dụng Bottleneck_DSC phục vụ phần cứng Edge."""
+
+    def __init__(self, c1: int, c2: int, n: int = 1, shortcut: bool = False, g: int = 1, e: float = 0.5):
+        """Khởi tạo khối CSP Bottleneck thế hệ mới tích hợp DSC."""
+        super().__init__()
+        self.c = int(c2 * e)  # Kênh ẩn (bằng một nửa số kênh đầu ra mục tiêu)
+        
+        # Lớp cv1 gốc: Nâng kênh lên gấp đôi để chuẩn bị split/chunk
+        self.cv1 = Conv(c1, 2 * self.c, 1, 1)
+        
+        # Lớp cv2 gốc: Gom tất cả các nhánh cat lại và nén về kênh c2 ban đầu
+        self.cv2 = Conv((2 + n) * self.c, c2, 1)  
+        
+        # Thay thế Bottleneck gốc bằng Bottleneck_DSC vừa tạo phía trên
+        # Giữ nguyên cấu hình e=1.0 để chạy chuỗi trích xuất mượt mà
+        self.m = nn.ModuleList(
+            Bottleneck_DSC(self.c, self.c, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n)
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Luồng chạy forward pass dùng chunk."""
+        y = list(self.cv1(x).chunk(2, 1))
+        y.extend(m(y[-1]) for m in self.m)
+        return self.cv2(torch.cat(y, 1))
+
+    def forward_split(self, x: torch.Tensor) -> torch.Tensor:
+        """Luồng chạy forward pass dự phòng dùng split."""
+        y = self.cv1(x).split((self.c, self.c), 1)
+        y = [y[0], y[1]]
+        y.extend(m(y[-1]) for m in self.m)
+        return self.cv2(torch.cat(y, 1))
