@@ -72,6 +72,17 @@ from ultralytics.nn.modules import (
     YOLOESegment,
     YOLOESegment26,
     v10Detect,
+    SimFusion_4in,
+    SimFusion_3in,
+    IFM,
+    InjectionMultiSum_Auto_pool,
+    PyramidPoolAgg,
+    AdvPoolFusion,
+    TopBasicLayer,
+    SimSPPF,
+    SimAM,
+    SimConv,
+    DSC,
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, LOGGER, SETTINGS, WINDOWS, YAML, colorstr, emojis
 from ultralytics.utils.checks import REMOTE_FILE_PREFIXES, check_file, check_requirements, check_suffix, check_yaml
@@ -1598,6 +1609,7 @@ def parse_model(d, ch, verbose=True):
         {
             Classify,
             Conv,
+            DSC,
             ConvTranspose,
             GhostConv,
             Bottleneck,
@@ -1630,6 +1642,7 @@ def parse_model(d, ch, verbose=True):
             SCDown,
             C2fCIB,
             A2C2f,
+            SimSPPF,
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments
@@ -1736,6 +1749,32 @@ def parse_model(d, ch, verbose=True):
             c2 = args[0]
             c1 = ch[f]
             args = [*args[1:]]
+        elif m is SimFusion_4in:
+            c2 = sum(ch[x] for x in f)
+        elif m is SimFusion_3in:
+            c2 = args[0]
+            if c2 != nc:  # if not output
+                c2 = make_divisible(c2 * width, 8)
+            args = [[ch[f_] for f_ in f], c2]
+        elif m is IFM:
+            c1 = ch[f]
+            c2 = sum(args[0])
+            args = [c1, *args]
+        elif m is InjectionMultiSum_Auto_pool:
+            c1 = ch[f[0]]
+            c2 = args[0]
+            args = [c1, *args]
+        elif m is PyramidPoolAgg:
+            c2 = args[0]
+            args = [sum([ch[f_] for f_ in f]), *args]
+        elif m is AdvPoolFusion:
+            c2 = sum(ch[x] for x in f)
+        elif m is TopBasicLayer:
+            c2 = sum(args[1])
+        elif m is SimAM:
+            c1 = ch[f]
+            c2 = c1
+            args = [*args]
         else:
             c2 = ch[f]
 

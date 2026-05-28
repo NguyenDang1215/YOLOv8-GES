@@ -59,6 +59,7 @@ from .block import (
     ResNetLayer,
     SCDown,
     TorchVision,
+    SimSPPF
 )
 from .conv import (
     CBAM,
@@ -75,6 +76,16 @@ from .conv import (
     LightConv,
     RepConv,
     SpatialAttention,
+    SimAM,
+    SimConv,
+    SimFusion_4in,
+    SimFusion_3in,
+    IFM,
+    InjectionMultiSum_Auto_pool,
+    PyramidPoolAgg,
+    AdvPoolFusion,
+    TopBasicLayer,
+    DSC,
 )
 from .head import (
     OBB,
@@ -147,6 +158,7 @@ __all__ = (
     "Conv",
     "Conv2",
     "ConvTranspose",
+    "DSC",
     "DWConv",
     "DWConvTranspose2d",
     "DeformableTransformerDecoder",
@@ -187,4 +199,5 @@ __all__ = (
     "YOLOESegment",
     "YOLOESegment26",
     "v10Detect",
+    "SimSPPF",
 )
