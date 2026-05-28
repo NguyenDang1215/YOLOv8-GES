@@ -77,6 +77,7 @@ from ultralytics.nn.modules import (
     SimFusion_3in,
     IFM,
     InjectionMultiSum_Auto_pool,
+    Inject_PConv,
     PyramidPoolAgg,
     AdvPoolFusion,
     TopBasicLayer,
@@ -1773,6 +1774,10 @@ def parse_model(d, ch, verbose=True):
             c1 = ch[f[0]]
             c2 = args[0]
             args = [c1, *args]
+        elif m is Inject_PConv:
+            c1 = ch[f[0]]
+            c2 = args[0]
+            args = [c1, *args]
         elif m is PyramidPoolAgg:
             c2 = args[0]
             args = [sum([ch[f_] for f_ in f]), *args]
@@ -1784,6 +1789,9 @@ def parse_model(d, ch, verbose=True):
             c1 = ch[f]
             c2 = c1
             args = [*args]
+        elif m is EMA:
+            c2 = ch[f]           # Tự động lấy số kênh đầu vào hiện tại (đã được scale)
+            args = [c2, *args]   # Truyền linh động vào module EMA
         else:
             c2 = ch[f]
 

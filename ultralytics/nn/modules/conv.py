@@ -1325,3 +1325,81 @@ class DSC(nn.Module):
         x = self.depthwise(x)
         x = self.pointwise(x)
         return x
+    
+class PConv1x1(nn.Module):
+    def __init__(self, inp, oup, n_div=4):
+        super().__init__()
+        # Chia làm 2 nhánh theo tỷ lệ n_div
+        self.dim_conv = max(1, inp // n_div) # Đảm bảo ít nhất có 1 kênh đem đi conv
+        self.dim_untouched = inp - self.dim_conv
+        
+        # Tính toán số kênh đầu ra cho 2 nhánh sao cho tổng bằng oup
+        # Nhánh 1 (tích chập) sẽ gánh một nửa oup, nhánh 2 (giữ nguyên/linear) gánh nửa còn lại
+        self.oup_conv = max(1, oup // n_div)
+        self.oup_untouched = oup - self.oup_conv
+        
+        # Nhánh 1: Tích chập thay đổi số kênh
+        self.partial_conv = nn.Conv2d(self.dim_conv, self.oup_conv, kernel_size=1, bias=False)
+        
+        # Nhánh 2: Nếu số kênh đầu vào và đầu ra của nhánh 2 khác nhau, 
+        # dùng một lớp Conv 1x1 siêu nhẹ (hoặc AvgPool) để điều chỉnh, không để giữ nguyên thuần túy
+        if self.dim_untouched != self.oup_untouched:
+            self.identity_adjust = nn.Conv2d(self.dim_untouched, self.oup_untouched, kernel_size=1, bias=False)
+        else:
+            self.identity_adjust = nn.Identity()
+
+    def forward(self, x):
+        # Chia tách kênh theo đầu vào
+        x1, x2 = torch.split(x, [self.dim_conv, self.dim_untouched], dim=1)
+        
+        # Xử lý nhánh 1 (Tích chập)
+        x1 = self.partial_conv(x1)
+        
+        # Xử lý nhánh 2 (Điều chỉnh số kênh cho khớp đầu ra)
+        x2 = self.identity_adjust(x2)
+        
+        # Ghép lại với nhau -> Tổng số kênh chắc chắn bằng oup
+        return torch.cat((x1, x2), dim=1)
+class Inject_PConv(nn.Module):
+    def __init__(self, inp: int, oup: int, global_inp: list, flag: int) -> None:
+        super().__init__()
+        self.global_inp = global_inp
+        self.flag = flag
+        g_inp = global_inp[self.flag]
+        
+        # THAY THẾ: Sử dụng PConv thay cho Conv 1x1 truyền thống giúp nén mạng
+        self.local_embedding = PConv1x1(inp, oup)
+        self.global_embedding = PConv1x1(g_inp, oup)
+        self.global_act = PConv1x1(g_inp, oup)
+        
+        self.act = h_sigmoid() # Giữ nguyên hàm kích hoạt của Gold-YOLO
+
+    def forward(self, x):
+        x_l, x_g = x
+        B, C, H, W = x_l.shape
+        g_B, g_C, g_H, g_W = x_g.shape
+        use_pool = H < g_H
+
+        gloabl_info = x_g.split(self.global_inp, dim=1)[self.flag]
+
+        # Khối PConv xử lý
+        local_feat = self.local_embedding(x_l)
+        global_act = self.global_act(gloabl_info)
+        global_feat = self.global_embedding(gloabl_info)
+
+        if use_pool:
+            avg_pool = get_avg_pool()
+            output_size = np.array([H, W])
+            sig_act = avg_pool(global_act, output_size)
+            global_feat = avg_pool(global_feat, output_size)
+        else:
+            sig_act = F.interpolate(
+                self.act(global_act), size=(H, W), mode="bilinear", align_corners=False
+            )
+            global_feat = F.interpolate(
+                global_feat, size=(H, W), mode="bilinear", align_corners=False
+            )
+
+        # Trộn đặc trưng 2 ngõ vào (Giữ nguyên logic của Gold-YOLO)
+        out = local_feat * sig_act + global_feat
+        return out

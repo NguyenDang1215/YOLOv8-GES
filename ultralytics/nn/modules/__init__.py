@@ -91,6 +91,7 @@ from .conv import (
     AdvPoolFusion,
     TopBasicLayer,
     DSC,
+    Inject_PConv,
 )
 from .head import (
     OBB,
