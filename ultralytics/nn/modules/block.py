@@ -9,7 +9,7 @@ import torch.nn.functional as F
 
 from ultralytics.utils.torch_utils import fuse_conv_and_bn
 
-from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, autopad, SimAM, SimConv
+from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, SimAM, SimConv, autopad
 from .transformer import TransformerBlock
 
 __all__ = (
@@ -2072,10 +2072,11 @@ class RealNVP(nn.Module):
         z, log_det = self.backward_p(x)
         return self.prior.log_prob(z) + log_det
 
+
 # introduce paper
 class SimSPPF(nn.Module):
-    '''Simplified SPPF with ReLU VAN_activation'''
-    
+    """Simplified SPPF with ReLU VAN_activation."""
+
     def __init__(self, c1, c2, k=5):
         super().__init__()
         c_ = c1 // 2  # hidden channels
@@ -2083,7 +2084,7 @@ class SimSPPF(nn.Module):
         self.cv2 = SimConv(c_ * 4, c2, 1, 1)
         self.m = nn.MaxPool2d(kernel_size=k, stride=1, padding=k // 2)
         self.simam = SimAM()
-    
+
     def forward(self, x):
         x = self.cv1(x)
         y1 = self.m(x)
