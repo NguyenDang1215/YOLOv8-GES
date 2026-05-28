@@ -2,7 +2,7 @@ from ultralytics.nn.tasks import DetectionModel
 import torch
 
 # 1. Đường dẫn tới file yaml của bạn
-cfg_path = 'ultralytics/cfg/models/v8/yolov8m-DSC.yaml' 
+cfg_path = 'ultralytics/cfg/models/v8/yolov8m-goldP2.yaml' 
 
 # 2. Khởi tạo model từ cấu trúc YAML
 # Lưu ý: Các class SimFusion, IFM... phải được import hoặc nằm trong 
