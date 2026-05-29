@@ -3,8 +3,7 @@
 nc: 5
 
 scales:
-  m: [0.67, 0.75, 768]  #YOLOv8m-goldFCEv2 summary: 310 layers, 18,684,687 parameters, 18,684,671 gradients, 77.4 GFLOPs
-
+  m: [0.67, 0.75, 768]  #YOLOv8m-goldFCEv4 summary: 322 layers, 18,685,173 parameters, 18,685,157 gradients, 77.6 GFLOPs
 # =========================
 # Backbone
 # =========================
@@ -66,7 +65,7 @@ head:
   - [-1, 3, Fast_C2f, [256, False]] # 25
 
   - [20, 1, SimAM, []] # 26
-  - [25, 1, SimAM, []] # 27
+  - [25, 1, EMA, []] # 27
 
   # ==================================================
   # NEW P2 BRANCH
@@ -75,7 +74,7 @@ head:
   - [20, 1, nn.Upsample, [None, 2, 'nearest']]                     # 28
   - [[-1, 2], 1, Concat, [1]]                                      # 29
   - [-1, 3, Fast_C2f, [128, False]]                                # 30
-  - [-1, 1, SimAM, []] # 31
+  - [-1, 1,EMA, []] # 31
 
   # =====================
   # Detect
