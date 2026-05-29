@@ -128,17 +128,27 @@ class BboxLoss(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Compute IoU and DFL losses for bounding boxes."""
         weight = target_scores.sum(-1)[fg_mask].unsqueeze(-1)
-        iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, CIoU=True)
-        loss_iou = ((1.0 - iou) * weight).sum() / target_scores_sum
+        
+        # ----------------- CHỈNH SỬA CHO WIoUv3 TẠI ĐÂY -----------------
+        # 1. Tính toán giá trị IoU trung bình động (iou_mean) của batch hiện tại làm mốc chất lượng
+        with torch.no_grad():
+            iou_base = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False)
+            iou_mean = iou_base.mean().item() if iou_base.numel() > 0 else 0.4
 
-        # DFL loss
+        # 2. Gọi hàm bbox_iou với tham số WIoU=True và truyền iou_mean vào để áp dụng hệ số điều hướng r
+        iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, WIoU=True, iou_mean=iou_mean)
+        
+        # 3. Tính toán loss_iou dựa trên giá trị WIoUv3 thu được
+        loss_iou = ((1.0 - iou) * weight).sum() / target_scores_sum
+        # -----------------------------------------------------------------
+
+        # Giữ nguyên phần tính toán DFL loss gốc của Ultralytics ở bên dưới
         if self.dfl_loss:
             target_ltrb = bbox2dist(anchor_points, target_bboxes, self.dfl_loss.reg_max - 1)
             loss_dfl = self.dfl_loss(pred_dist[fg_mask].view(-1, self.dfl_loss.reg_max), target_ltrb[fg_mask]) * weight
             loss_dfl = loss_dfl.sum() / target_scores_sum
         else:
             target_ltrb = bbox2dist(anchor_points, target_bboxes)
-            # normalize ltrb by image size
             target_ltrb = target_ltrb * stride
             target_ltrb[..., 0::2] /= imgsz[1]
             target_ltrb[..., 1::2] /= imgsz[0]

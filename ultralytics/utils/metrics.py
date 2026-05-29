@@ -85,27 +85,11 @@ def bbox_iou(
     GIoU: bool = False,
     DIoU: bool = False,
     CIoU: bool = False,
+    WIoU: bool = False,     # <-- THÊM THAM SỐ BẬT WIoUv3 TẠI ĐÂY
+    iou_mean: float = 0.4,  # <-- Thêm iou_mean động phục vụ cho WIoUv3
     eps: float = 1e-7,
 ) -> torch.Tensor:
-    """Calculate the Intersection over Union (IoU) between bounding boxes.
-
-    This function supports various shapes for `box1` and `box2` as long as the last dimension is 4. For instance, you
-    may pass tensors shaped like (4,), (N, 4), (B, N, 4), or (B, N, 1, 4). Internally, the code will split the last
-    dimension into (x, y, w, h) if `xywh=True`, or (x1, y1, x2, y2) if `xywh=False`.
-
-    Args:
-        box1 (torch.Tensor): A tensor representing one or more bounding boxes, with the last dimension being 4.
-        box2 (torch.Tensor): A tensor representing one or more bounding boxes, with the last dimension being 4.
-        xywh (bool, optional): If True, input boxes are in (x, y, w, h) format. If False, input boxes are in (x1, y1,
-            x2, y2) format.
-        GIoU (bool, optional): If True, calculate Generalized IoU.
-        DIoU (bool, optional): If True, calculate Distance IoU.
-        CIoU (bool, optional): If True, calculate Complete IoU.
-        eps (float, optional): A small value to avoid division by zero.
-
-    Returns:
-        (torch.Tensor): IoU, GIoU, DIoU, or CIoU values depending on the specified flags.
-    """
+    """Calculate the Intersection over Union (IoU) between bounding boxes."""
     # Get the coordinates of bounding boxes
     if xywh:  # transform from xywh to xyxy
         (x1, y1, w1, h1), (x2, y2, w2, h2) = box1.chunk(4, -1), box2.chunk(4, -1)
@@ -126,25 +110,46 @@ def bbox_iou(
     # Union Area
     union = w1 * h1 + w2 * h2 - inter + eps
 
-    # IoU
+    # IoU cơ bản
     iou = inter / union
-    if CIoU or DIoU or GIoU:
+    
+    # Xử lý các loại Loss nâng cao: CIoU, DIoU, GIoU, WIoU
+    if CIoU or DIoU or GIoU or WIoU:
         cw = b1_x2.maximum(b2_x2) - b1_x1.minimum(b2_x1)  # convex (smallest enclosing box) width
         ch = b1_y2.maximum(b2_y2) - b1_y1.minimum(b2_y1)  # convex height
-        if CIoU or DIoU:  # Distance or Complete IoU https://arxiv.org/abs/1911.08287v1
+        
+        # --- CODE CẤU HÌNH WIoUv3 ---
+        if WIoU:
             c2 = cw.pow(2) + ch.pow(2) + eps  # convex diagonal squared
-            rho2 = (
-                (b2_x1 + b2_x2 - b1_x1 - b1_x2).pow(2) + (b2_y1 + b2_y2 - b1_y1 - b1_y2).pow(2)
-            ) / 4  # center dist**2
-            if CIoU:  # https://github.com/Zzh-tju/DIoU-SSD-pytorch/blob/master/utils/box/box_utils.py#L47
+            rho2 = ((b2_x1 + b2_x2 - b1_x1 - b1_x2).pow(2) + (b2_y1 + b2_y2 - b1_y1 - b1_y2).pow(2)) / 4
+            
+            # Tính toán WIoUv1 cơ bản (R_WIoU)
+            r_wiou = torch.exp(rho2 / (c2.detach()))
+            
+            # Cơ chế điều hướng Non-monotonic focusing factor của WIoUv3 (như ảnh công thức toán học)
+            with torch.no_grad():
+                # Tính độ lệch chất lượng anchor (beta = L_wiou1 / iou_mean)
+                beta = (rho2 / c2) / (iou_mean + eps)
+                # Tính hệ số điều hướng r (với alpha = 1.9, delta = 3 tiêu chuẩn từ bài báo)
+                r = beta / (1.11 * (beta ** 1.11))
+                
+            return r * r_wiou * iou  # Trả về kết quả WIoUv3
+            
+        # Giữ nguyên logic cũ của Ultralytics cho các loss khác
+        if CIoU or DIoU:  # Distance or Complete IoU
+            c2 = cw.pow(2) + ch.pow(2) + eps  # convex diagonal squared
+            rho2 = ((b2_x1 + b2_x2 - b1_x1 - b1_x2).pow(2) + (b2_y1 + b2_y2 - b1_y1 - b1_y2).pow(2)) / 4
+            if CIoU:
                 v = (4 / math.pi**2) * ((w2 / h2).atan() - (w1 / h1).atan()).pow(2)
                 with torch.no_grad():
                     alpha = v / (v - iou + (1 + eps))
                 return iou - (rho2 / c2 + v * alpha)  # CIoU
             return iou - rho2 / c2  # DIoU
+            
         c_area = cw * ch + eps  # convex area
-        return iou - (c_area - union) / c_area  # GIoU https://arxiv.org/pdf/1902.09630.pdf
-    return iou  # IoU
+        return iou - (c_area - union) / c_area  # GIoU
+        
+    return iou  # IoU mộc
 
 
 def mask_iou(mask1: torch.Tensor, mask2: torch.Tensor, eps: float = 1e-7) -> torch.Tensor:

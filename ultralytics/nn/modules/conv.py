@@ -1439,8 +1439,20 @@ class BiLevelRoutingAttention(nn.Module):
         """
         B, H, W, C = x.shape
         S = self.n_win
-        window_size_h = H // S
-        window_size_w = W // S
+        
+        # 1. TÍNH TOÁN PADDING ĐỘNG ĐỂ CHIA HẾT CHO S (CỨU LỖI RUNTIME SHAPE)
+        pad_h = (S - H % S) % S
+        pad_w = (S - W % S) % S
+        
+        if pad_h > 0 or pad_w > 0:
+            # Thực hiện thêm viền đệm (Padding) zero vào phía sau các chiều H và W
+            x = F.pad(x, (0, 0, 0, pad_w, 0, pad_h)) # Định dạng pad: (C_trước, C_sau, W_trước, W_sau, H_trước, H_sau)
+            _, H_pad, W_pad, _ = x.shape
+        else:
+            H_pad, W_pad = H, W
+            
+        window_size_h = H_pad // S
+        window_size_w = W_pad // S
         n_tokens_per_win = window_size_h * window_size_w
         
         # Nhánh tăng cường vị trí cục bộ bằng DWConv
@@ -1451,51 +1463,49 @@ class BiLevelRoutingAttention(nn.Module):
             x = x + x_conv
 
         # Chiếu ma trận tách biệt Q, K, V
-        qkv = self.qkv(x) # [B, H, W, 3*C]
-        q, k, v = qkv.chunk(3, dim=-1) # Tách thành 3 ma trận kích thước [B, H, W, C]
+        qkv = self.qkv(x) 
+        q, k, v = qkv.chunk(3, dim=-1) 
 
-        # 1. Phân chia cấu trúc không gian thành các ô cửa sổ độc lập (Window Partition)
+        # Phân chia cấu trúc không gian thành các ô cửa sổ độc lập (Window Partition)
+        # Bấy giờ H_pad và W_pad chắc chắn chia hết cho S (n_win) nên không bao giờ lỗi nữa!
         q_win = q.view(B, S, window_size_h, S, window_size_w, C).permute(0, 1, 3, 2, 4, 5).contiguous().view(B, S*S, n_tokens_per_win, C)
         k_win = k.view(B, S, window_size_h, S, window_size_w, C).permute(0, 1, 3, 2, 4, 5).contiguous().view(B, S*S, n_tokens_per_win, C)
         v_win = v.view(B, S, window_size_h, S, window_size_w, C).permute(0, 1, 3, 2, 4, 5).contiguous().view(B, S*S, n_tokens_per_win, C)
         
         # 2. ĐỊNH TUYẾN CẤP ĐỘ VÙNG (Region-level routing)
-        q_r = self.router_linear(q_win.mean(dim=2)) # Đại diện Query vùng: [B, S*S, C]
-        k_r = self.router_linear(k_win.mean(dim=2)) # Đại diện Key vùng  : [B, S*S, C]
+        q_r = self.router_linear(q_win.mean(dim=2)) 
+        k_r = self.router_linear(k_win.mean(dim=2)) 
         
         router_attn = (q_r @ k_r.transpose(-2, -1)) * self.scale
-        router_attn = router_attn.softmax(dim=-1) # Ma trận trọng số định tuyến vùng [B, S*S, S*S]
+        router_attn = router_attn.softmax(dim=-1) 
         
-        # Lấy ra Top-K vùng quan trọng nhất ứng với từng vùng truy vấn
-        topk_attn, topk_indices = torch.topk(router_attn, k=self.topk, dim=-1) # [B, S*S, topk]
+        topk_attn, topk_indices = torch.topk(router_attn, k=self.topk, dim=-1) 
         
-        # 3. THU THẬP TOKEN TỪ CÁC VÙNG ĐƯỢC CHỈ ĐỊNH (SỬA LỖI TẠI ĐÂY)
-        # Tạo ma trận chỉ mục mở rộng tương thích với số lượng token trong cửa sổ
+        # 3. THU THẬP TOKEN TỪ CÁC VÙNG ĐƯỢC CHỈ ĐỊNH
         gather_indices = topk_indices.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, -1, n_tokens_per_win, C)
         
-        # Mở rộng K và V để thực hiện gom cụm dữ liệu song song
         k_win_expanded = k_win.unsqueeze(1).expand(-1, S*S, -1, -1, -1)
         v_win_expanded = v_win.unsqueeze(1).expand(-1, S*S, -1, -1, -1)
         
-        # Gom chính xác các Token từ các vùng nằm trong Top-K định tuyến
-        k_routed = torch.gather(k_win_expanded, dim=2, index=gather_indices).flatten(2, 3) # [B, S*S, topk * n_tokens_per_win, C]
-        v_routed = torch.gather(v_win_expanded, dim=2, index=gather_indices).flatten(2, 3) # [B, S*S, topk * n_tokens_per_win, C]
+        k_routed = torch.gather(k_win_expanded, dim=2, index=gather_indices).flatten(2, 3) 
+        v_routed = torch.gather(v_win_expanded, dim=2, index=gather_indices).flatten(2, 3) 
 
         # 4. TÍNH TOÁN ĐA ĐẦU CHÚ Ý CHI TIẾT (Token-to-Token Attention)
-        # Chuyển đổi định dạng sang Multi-head
         q_win = q_win.view(B, S*S, n_tokens_per_win, self.num_heads, self.head_dim).permute(0, 1, 3, 2, 4)
         k_routed = k_routed.view(B, S*S, self.topk * n_tokens_per_win, self.num_heads, self.head_dim).permute(0, 1, 3, 2, 4)
         v_routed = v_routed.view(B, S*S, self.topk * n_tokens_per_win, self.num_heads, self.head_dim).permute(0, 1, 3, 2, 4)
 
-        # Tính toán ma trận Attention cục bộ tinh gọn
         attn = (q_win @ k_routed.transpose(-2, -1)) * self.scale
         attn = attn.softmax(dim=-1)
         
-        # Xuất đặc trưng ngữ cảnh sau chú ý định tuyến
         out = (attn @ v_routed).permute(0, 1, 3, 2, 4).reshape(B, S*S, n_tokens_per_win, C)
         
-        # 5. KHÔI PHỤC ĐỊNH DẠNG KHÔNG GIAN ẢNH GỐC [B, H, W, C]
-        out = out.view(B, S, S, window_size_h, window_size_w, C).permute(0, 1, 3, 2, 4, 5).reshape(B, H, W, C)
+        # 5. KHÔI PHỤC ĐỊNH DẠNG KHÔNG GIAN VÀ CẮT BỎ PADDING THỪA ĐỂ TRẢ LẠI ĐÚNG SHAPE GỐC
+        out = out.view(B, S, S, window_size_h, window_size_w, C).permute(0, 1, 3, 2, 4, 5).reshape(B, H_pad, W_pad, C)
+        
+        if pad_h > 0 or pad_w > 0:
+            out = out[:, :H, :W, :].contiguous() # Cắt bỏ phần rìa ảnh ảo đã đệm ban đầu
+            
         out = self.output_linear(out)
         return out
 
