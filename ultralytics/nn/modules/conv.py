@@ -27,6 +27,7 @@ __all__ = (
     "LightConv",
     "RepConv",
     "SpatialAttention",
+    "BiFormer"
 )
 
 
@@ -1403,3 +1404,155 @@ class Inject_PConv(nn.Module):
         # Trộn đặc trưng 2 ngõ vào (Giữ nguyên logic của Gold-YOLO)
         out = local_feat * sig_act + global_feat
         return out
+    
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class BiLevelRoutingAttention(nn.Module):
+    """
+    Bi-level Routing Attention (BRA) - Đã sửa lỗi định tuyến thu thập mã Token bằng Torch.Gather
+    """
+    def __init__(self, dim, num_heads=8, n_win=7, topk=4, qkv_bias=True, qk_scale=None, side_dwconv=3):
+        super().__init__()
+        self.dim = dim
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        self.n_win = n_win
+        self.topk = topk
+        self.scale = qk_scale or self.head_dim ** -0.5
+
+        # Gom bộ chiếu QKV thành 1 tầng Linear tuyến tính tăng tốc độ xử lý
+        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        self.output_linear = nn.Linear(dim, dim)
+        self.router_linear = nn.Linear(dim, dim)
+
+        if side_dwconv > 0:
+            self.dwconv = nn.Conv2d(dim, dim, kernel_size=side_dwconv, 
+                                    padding=side_dwconv // 2, groups=dim)
+        else:
+            self.dwconv = None
+
+    def forward(self, x):
+        """
+        Input: x có kích thước [B, H, W, C]
+        """
+        B, H, W, C = x.shape
+        S = self.n_win
+        window_size_h = H // S
+        window_size_w = W // S
+        n_tokens_per_win = window_size_h * window_size_w
+        
+        # Nhánh tăng cường vị trí cục bộ bằng DWConv
+        if self.dwconv is not None:
+            x_conv = x.permute(0, 3, 1, 2).contiguous()
+            x_conv = self.dwconv(x_conv)
+            x_conv = x_conv.permute(0, 2, 3, 1).contiguous()
+            x = x + x_conv
+
+        # Chiếu ma trận tách biệt Q, K, V
+        qkv = self.qkv(x) # [B, H, W, 3*C]
+        q, k, v = qkv.chunk(3, dim=-1) # Tách thành 3 ma trận kích thước [B, H, W, C]
+
+        # 1. Phân chia cấu trúc không gian thành các ô cửa sổ độc lập (Window Partition)
+        q_win = q.view(B, S, window_size_h, S, window_size_w, C).permute(0, 1, 3, 2, 4, 5).contiguous().view(B, S*S, n_tokens_per_win, C)
+        k_win = k.view(B, S, window_size_h, S, window_size_w, C).permute(0, 1, 3, 2, 4, 5).contiguous().view(B, S*S, n_tokens_per_win, C)
+        v_win = v.view(B, S, window_size_h, S, window_size_w, C).permute(0, 1, 3, 2, 4, 5).contiguous().view(B, S*S, n_tokens_per_win, C)
+        
+        # 2. ĐỊNH TUYẾN CẤP ĐỘ VÙNG (Region-level routing)
+        q_r = self.router_linear(q_win.mean(dim=2)) # Đại diện Query vùng: [B, S*S, C]
+        k_r = self.router_linear(k_win.mean(dim=2)) # Đại diện Key vùng  : [B, S*S, C]
+        
+        router_attn = (q_r @ k_r.transpose(-2, -1)) * self.scale
+        router_attn = router_attn.softmax(dim=-1) # Ma trận trọng số định tuyến vùng [B, S*S, S*S]
+        
+        # Lấy ra Top-K vùng quan trọng nhất ứng với từng vùng truy vấn
+        topk_attn, topk_indices = torch.topk(router_attn, k=self.topk, dim=-1) # [B, S*S, topk]
+        
+        # 3. THU THẬP TOKEN TỪ CÁC VÙNG ĐƯỢC CHỈ ĐỊNH (SỬA LỖI TẠI ĐÂY)
+        # Tạo ma trận chỉ mục mở rộng tương thích với số lượng token trong cửa sổ
+        gather_indices = topk_indices.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, -1, n_tokens_per_win, C)
+        
+        # Mở rộng K và V để thực hiện gom cụm dữ liệu song song
+        k_win_expanded = k_win.unsqueeze(1).expand(-1, S*S, -1, -1, -1)
+        v_win_expanded = v_win.unsqueeze(1).expand(-1, S*S, -1, -1, -1)
+        
+        # Gom chính xác các Token từ các vùng nằm trong Top-K định tuyến
+        k_routed = torch.gather(k_win_expanded, dim=2, index=gather_indices).flatten(2, 3) # [B, S*S, topk * n_tokens_per_win, C]
+        v_routed = torch.gather(v_win_expanded, dim=2, index=gather_indices).flatten(2, 3) # [B, S*S, topk * n_tokens_per_win, C]
+
+        # 4. TÍNH TOÁN ĐA ĐẦU CHÚ Ý CHI TIẾT (Token-to-Token Attention)
+        # Chuyển đổi định dạng sang Multi-head
+        q_win = q_win.view(B, S*S, n_tokens_per_win, self.num_heads, self.head_dim).permute(0, 1, 3, 2, 4)
+        k_routed = k_routed.view(B, S*S, self.topk * n_tokens_per_win, self.num_heads, self.head_dim).permute(0, 1, 3, 2, 4)
+        v_routed = v_routed.view(B, S*S, self.topk * n_tokens_per_win, self.num_heads, self.head_dim).permute(0, 1, 3, 2, 4)
+
+        # Tính toán ma trận Attention cục bộ tinh gọn
+        attn = (q_win @ k_routed.transpose(-2, -1)) * self.scale
+        attn = attn.softmax(dim=-1)
+        
+        # Xuất đặc trưng ngữ cảnh sau chú ý định tuyến
+        out = (attn @ v_routed).permute(0, 1, 3, 2, 4).reshape(B, S*S, n_tokens_per_win, C)
+        
+        # 5. KHÔI PHỤC ĐỊNH DẠNG KHÔNG GIAN ẢNH GỐC [B, H, W, C]
+        out = out.view(B, S, S, window_size_h, window_size_w, C).permute(0, 1, 3, 2, 4, 5).reshape(B, H, W, C)
+        out = self.output_linear(out)
+        return out
+
+# ==========================================
+# 2. KHỐI BIFOMERBLOCK HOÀN CHỈNH
+# ==========================================
+class BiFormerBlock(nn.Module):
+    def __init__(self, dim, num_heads, n_win=7, topk=4, mlp_ratio=4., qkv_bias=True, qk_scale=None,
+                 drop=0., drop_path=0., norm_layer=nn.LayerNorm, side_dwconv=3):
+        super().__init__()
+        self.norm1 = norm_layer(dim)
+        self.attn = BiLevelRoutingAttention(
+            dim=dim, num_heads=num_heads, n_win=n_win, topk=topk,
+            qkv_bias=qkv_bias, qk_scale=qk_scale, side_dwconv=side_dwconv
+        )
+        
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        self.norm2 = norm_layer(dim)
+        mlp_hidden_dim = int(dim * mlp_ratio)
+        self.mlp = Ml_p(in_features=dim, hidden_features=mlp_hidden_dim, drop=drop)
+
+    def forward(self, x):
+        is_channels_first = False
+        if len(x.shape) == 4 and x.shape[1] != x.shape[2] and x.shape[1] != x.shape[3]:
+            B, C, H, W = x.shape
+            x = x.permute(0, 2, 3, 1).contiguous()
+            is_channels_first = True
+
+        x = x + self.drop_path(self.attn(self.norm1(x)))
+        x = x + self.drop_path(self.mlp(self.norm2(x)))
+
+        if is_channels_first:
+            x = x.permute(0, 3, 1, 2).contiguous()
+        return x
+
+# ==========================================
+# 3. MODULE KẾT HỢP DÀNH CHO YOLO (YAML Wrapper)
+# ==========================================
+class BiFormer(nn.Module):
+    def __init__(self, c1, c2, num_heads=8, n_win=7, topk=4, mlp_ratio=4.):
+        super().__init__()
+        self.conv_match = nn.Conv2d(c1, c2, kernel_size=1) if c1 != c2 else nn.Identity()
+        self.block = BiFormerBlock(dim=c2, num_heads=num_heads, n_win=n_win, topk=topk, mlp_ratio=mlp_ratio)
+
+    def forward(self, x):
+        x = self.conv_match(x)
+        return self.block(x)
+    
+class Ml_p(nn.Module):
+    def __init__(self, in_features, hidden_features=None, out_features=None, drop=0.):
+        super().__init__()
+        out_features = out_features or in_features
+        hidden_features = hidden_features or in_features
+        self.fc1 = nn.Linear(in_features, hidden_features)
+        self.act = nn.GELU()
+        self.fc2 = nn.Linear(hidden_features, out_features)
+        self.drop = nn.Dropout(drop)
+
+    def forward(self, x):
+        return self.drop(self.fc2(self.drop(self.act(self.fc1(x)))))

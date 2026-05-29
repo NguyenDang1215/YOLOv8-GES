@@ -3,7 +3,7 @@
 nc: 5
 
 scales:
-  m: [0.67, 0.75, 768]  #YOLOv8m-goldP2 summary: 331 layers, 22,812,912 parameters, 22,812,896 gradients, 70.1 GFLOPs
+  m: [0.67, 0.75, 768]  #YOLOv8m-goldP2 summary: 294 layers, 20,230,959 parameters, 20,230,943 gradients, 87.6 GFLOPs
 
 # =========================
 # Backbone

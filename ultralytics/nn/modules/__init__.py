@@ -67,6 +67,7 @@ from .block import (
     Fast_C2f,
 )
 from .conv import (
+    BiFormer,
     CBAM,
     ChannelAttention,
     Concat,
@@ -124,6 +125,7 @@ from .transformer import (
 )
 
 __all__ = (
+    "BiFormer",
     "AIFI",
     "C1",
     "C2",
