@@ -2268,70 +2268,83 @@ class Fast_C2f(nn.Module):
         return self.cv2(torch.cat(y, 1))
     
 class Fast_C2f_EMA(nn.Module):
-    """Cấu trúc theo diagram + Fix channel mismatch"""
-    
-    def __init__(self, c1, c2, n=1, shortcut=True, e=0.5):
+    def __init__(self, c1, c2, n=3, e=0.5):
         super().__init__()
-        self.c = int(c2 * e)                    # Ví dụ: c2=192 → self.c=96
-        
-        # cv1: tách thành 2 nhánh
-        self.cv1 = nn.Sequential(
-            nn.Conv2d(c1, 2 * self.c, 1, bias=False),
-            nn.BatchNorm2d(2 * self.c),
-            nn.SiLU()
-        )
-        
-        # cv2: tổng số nhánh = 2 (từ split) + n (FasterBlock) + 2 (EMA + FasterBlock cuối)
-        self.cv2 = nn.Sequential(
-            nn.Conv2d((2 + n + 2) * self.c, c2, 1, bias=False),   # ← SỬA Ở ĐÂY
-            nn.BatchNorm2d(c2),
-            nn.SiLU()
-        )
 
-        self.m = nn.ModuleList()
-        for i in range(n):
-            self.m.append(FasterBlock(self.c, self.c))      # FasterBlock
-            if i == n - 1:                                  # Nhánh cuối
-                self.m.append(EMA(self.c))                  # EMA
-                self.m.append(FasterBlock(self.c, self.c))  # FasterBlock sau EMA
-
-    def forward(self, x):
-        y = list(self.cv1(x).chunk(2, dim=1))   # Split → 2 tensors
-        
-        for layer in self.m:
-            y.append(layer(y[-1]))              # Thêm output của mỗi layer
-        
-        return self.cv2(torch.cat(y, dim=1))
-
-class Fast_C2f_SimAM(nn.Module):
-    """Fast_C2f thay EMA bằng SimAM - Nhẹ hơn"""
-    
-    def __init__(self, c1, c2, n=1, shortcut=True, e=0.5):
-        super().__init__()
         self.c = int(c2 * e)
-        
+
         self.cv1 = nn.Sequential(
             nn.Conv2d(c1, 2 * self.c, 1, bias=False),
             nn.BatchNorm2d(2 * self.c),
             nn.SiLU()
         )
-        
-        # Tính số nhánh: 2 (split) + n (FasterBlock) + 2 (SimAM + FasterBlock cuối)
+
+        # EMA thay SimAM
+        self.attn = EMA(self.c)
+
+        # Các FasterBlock
+        self.m = nn.ModuleList(
+            FasterBlock(self.c, self.c)
+            for _ in range(n)
+        )
+
+        # 2 nhánh split + SimAM + n FasterBlock
         self.cv2 = nn.Sequential(
-            nn.Conv2d((2 + n + 2) * self.c, c2, 1, bias=False),
+            nn.Conv2d((n + 3) * self.c, c2, 1, bias=False),
             nn.BatchNorm2d(c2),
             nn.SiLU()
         )
 
-        self.m = nn.ModuleList()
-        for i in range(n):
-            self.m.append(FasterBlock(self.c, self.c))      # FasterBlock
-            if i == n - 1:                                  # Nhánh cuối
-                self.m.append(SimAM())                      # ← Thay EMA bằng SimAM
-                self.m.append(FasterBlock(self.c, self.c))
+    def forward(self, x):
+
+        y = list(self.cv1(x).chunk(2, dim=1))
+
+        z = self.attn(y[-1])
+        y.append(z)
+
+        for m in self.m:
+            z = m(z)
+            y.append(z)
+
+        return self.cv2(torch.cat(y, dim=1))
+    
+class Fast_C2f_SimAM(nn.Module):
+    def __init__(self, c1, c2, n=3, e=0.5):
+        super().__init__()
+
+        self.c = int(c2 * e)
+
+        self.cv1 = nn.Sequential(
+            nn.Conv2d(c1, 2 * self.c, 1, bias=False),
+            nn.BatchNorm2d(2 * self.c),
+            nn.SiLU()
+        )
+
+        # SimAM thay EMA
+        self.attn = SimAM()
+
+        # Các FasterBlock
+        self.m = nn.ModuleList(
+            FasterBlock(self.c, self.c)
+            for _ in range(n)
+        )
+
+        # 2 nhánh split + SimAM + n FasterBlock
+        self.cv2 = nn.Sequential(
+            nn.Conv2d((n + 3) * self.c, c2, 1, bias=False),
+            nn.BatchNorm2d(c2),
+            nn.SiLU()
+        )
 
     def forward(self, x):
+
         y = list(self.cv1(x).chunk(2, dim=1))
-        for layer in self.m:
-            y.append(layer(y[-1]))
+
+        z = self.attn(y[-1])
+        y.append(z)
+
+        for m in self.m:
+            z = m(z)
+            y.append(z)
+
         return self.cv2(torch.cat(y, dim=1))
