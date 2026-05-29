@@ -119,21 +119,30 @@ def bbox_iou(
         ch = b1_y2.maximum(b2_y2) - b1_y1.minimum(b2_y1)  # convex height
         
         # --- CODE CẤU HÌNH WIoUv3 ---
+        # --- CODE CẤU HÌNH WIoUv3 CHUẨN HOÁ ---
         if WIoU:
-            c2 = cw.pow(2) + ch.pow(2) + eps  # convex diagonal squared
+            c2 = cw.pow(2) + ch.pow(2) + eps  # đường chéo bình phương của khung bao ngoài
             rho2 = ((b2_x1 + b2_x2 - b1_x1 - b1_x2).pow(2) + (b2_y1 + b2_y2 - b1_y1 - b1_y2).pow(2)) / 4
             
-            # Tính toán WIoUv1 cơ bản (R_WIoU)
+            # 1. Tính WIoUv1 khoảng cách tâm thu phóng
             r_wiou = torch.exp(rho2 / (c2.detach()))
             
-            # Cơ chế điều hướng Non-monotonic focusing factor của WIoUv3 (như ảnh công thức toán học)
+            # 2. Cơ chế điều hướng phi đơn điệu (Non-monotonic focusing factor) của WIoUv3
             with torch.no_grad():
-                # Tính độ lệch chất lượng anchor (beta = L_wiou1 / iou_mean)
-                beta = (rho2 / c2) / (iou_mean + eps)
-                # Tính hệ số điều hướng r (với alpha = 1.9, delta = 3 tiêu chuẩn từ bài báo)
-                r = beta / (1.11 * (beta ** 1.11))
+                # Định nghĩa tham số tối ưu từ thực nghiệm bài báo (alpha=1.9, delta=3.0)
+                alpha = 1.9
+                delta = 3.0
                 
-            return r * r_wiou * iou  # Trả về kết quả WIoUv3
+                # Tính độ lệch giá trị ngoại lai (outlier degree) dựa trên iou_mean động của batch
+                beta = (r_wiou * (1.0 - iou)) / (iou_mean + eps)
+                
+                # Tính gradient gain (hệ số r) giúp giảm trọng số mẫu quá nhiễu/quá khó
+                r = beta / (delta * (alpha ** (beta - delta)))
+            
+            # 3. Trả về giá trị tương đồng (similarity) cho Ultralytics 
+            # Định nghĩa Loss_WIoUv3 = r * r_wiou * (1.0 - iou)
+            # Do Ultralytics tính Loss = 1.0 - trả_về, nên ta trả về: 1.0 - Loss_WIoUv3
+            return 1.0 - (r * r_wiou * (1.0 - iou))
             
         # Giữ nguyên logic cũ của Ultralytics cho các loss khác
         if CIoU or DIoU:  # Distance or Complete IoU

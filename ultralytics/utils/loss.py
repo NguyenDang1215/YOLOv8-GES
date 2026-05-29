@@ -129,16 +129,32 @@ class BboxLoss(nn.Module):
         """Compute IoU and DFL losses for bounding boxes."""
         weight = target_scores.sum(-1)[fg_mask].unsqueeze(-1)
         
-        # ----------------- CHỈNH SỬA CHO WIoUv3 TẠI ĐÂY -----------------
-        # 1. Tính toán giá trị IoU trung bình động (iou_mean) của batch hiện tại làm mốc chất lượng
+        # ----------------- CHỈNH SỬA CHO WIoUv3 CHUẨN XÁC -----------------
+        # 1. Tính toán giá trị IoU mộc (chỉ lấy phần giao/hợp diện tích) 
+        # Ép tất cả các cờ nâng cao về False để lấy đúng IoU gốc làm thước đo chất lượng trung bình
         with torch.no_grad():
-            iou_base = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False)
+            iou_base = bbox_iou(
+                pred_bboxes[fg_mask], 
+                target_bboxes[fg_mask], 
+                xywh=False, 
+                GIoU=False, 
+                DIoU=False, 
+                CIoU=False, 
+                WIoU=False
+            )
+            # Tránh lỗi chia cho 0 nếu batch rỗng, mốc iou_mean tiêu chuẩn là 0.4
             iou_mean = iou_base.mean().item() if iou_base.numel() > 0 else 0.4
 
-        # 2. Gọi hàm bbox_iou với tham số WIoU=True và truyền iou_mean vào để áp dụng hệ số điều hướng r
-        iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, WIoU=True, iou_mean=iou_mean)
+        # 2. Gọi hàm bbox_iou với cấu hình WIoU=True và truyền iou_mean động của batch vào
+        iou = bbox_iou(
+            pred_bboxes[fg_mask], 
+            target_bboxes[fg_mask], 
+            xywh=False, 
+            WIoU=True, 
+            iou_mean=iou_mean
+        )
         
-        # 3. Tính toán loss_iou dựa trên giá trị WIoUv3 thu được
+        # 3. Tính toán loss_iou (Lúc này (1.0 - iou) sẽ giải phóng đúng công thức r * r_wiou * (1.0 - iou))
         loss_iou = ((1.0 - iou) * weight).sum() / target_scores_sum
         # -----------------------------------------------------------------
 
@@ -161,7 +177,6 @@ class BboxLoss(nn.Module):
             loss_dfl = loss_dfl.sum() / target_scores_sum
 
         return loss_iou, loss_dfl
-
 
 class RLELoss(nn.Module):
     """Residual Log-Likelihood Estimation Loss.
