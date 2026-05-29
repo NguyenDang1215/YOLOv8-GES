@@ -89,6 +89,8 @@ from ultralytics.nn.modules import (
     FasterBlock,
     EMA,
     Fast_C2f,
+    Fast_C2f_EMA,
+    Fast_C2f_SimAM,
     BiFormer,
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, LOGGER, SETTINGS, WINDOWS, YAML, colorstr, emojis
@@ -1652,6 +1654,8 @@ def parse_model(d, ch, verbose=True):
             A2C2f,
             SimSPPF,
             Fast_C2f,
+            Fast_C2f_EMA,
+            Fast_C2f_SimAM,
             BiFormer
         }
     )
@@ -1663,6 +1667,8 @@ def parse_model(d, ch, verbose=True):
             C2f,
             C2f_DSC,
             Fast_C2f,
+            Fast_C2f_EMA,
+            Fast_C2f_SimAM,
             C3k2,
             C2fAttn,
             C3,

@@ -65,6 +65,8 @@ from .block import (
     FasterBlock,
     EMA,
     Fast_C2f,
+    Fast_C2f_EMA,
+    Fast_C2f_SimAM
 )
 from .conv import (
     BiFormer,
@@ -212,5 +214,7 @@ __all__ = (
     "PConv",
     "FasterBlock",
     "EMA",
-    "Fast_C2f"
+    "Fast_C2f",
+    "Fast_C2f_EMA",
+    "Fast_C2f_SimAM"
 )

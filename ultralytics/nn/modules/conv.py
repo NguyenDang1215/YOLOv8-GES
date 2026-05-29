@@ -795,7 +795,7 @@ class RepVGGBlock(nn.Module):
 
         padding_11 = padding - kernel_size // 2
 
-        self.nonlinearity = nn.Mish()
+        self.nonlinearity = nn.ReLU()
 
         if use_se:
             raise NotImplementedError("se block not supported yet")
@@ -944,21 +944,21 @@ class SimFusion_3in(nn.Module):
     def __init__(self, in_channel_list, out_channels):
         super().__init__()
         self.cv1 = (
-            Conv(in_channel_list[0], out_channels, act=nn.Mish())
+            Conv(in_channel_list[0], out_channels, act=nn.ReLU())
             if in_channel_list[0] != out_channels
             else nn.Identity()
         )
         self.cv2 = (
-            Conv(in_channel_list[1], out_channels, act=nn.Mish())
+            Conv(in_channel_list[1], out_channels, act=nn.ReLU())
             if in_channel_list[1] != out_channels
             else nn.Identity()
         )
         self.cv3 = (
-            Conv(in_channel_list[2], out_channels, act=nn.Mish())
+            Conv(in_channel_list[2], out_channels, act=nn.ReLU())
             if in_channel_list[2] != out_channels
             else nn.Identity()
         )
-        self.cv_fuse = Conv(out_channels * 3, out_channels, act=nn.Mish())
+        self.cv_fuse = Conv(out_channels * 3, out_channels, act=nn.ReLU())
         self.downsample = nn.functional.adaptive_avg_pool2d
 
     def forward(self, x):
