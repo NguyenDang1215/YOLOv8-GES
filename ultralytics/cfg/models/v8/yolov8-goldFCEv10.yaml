@@ -4,7 +4,7 @@
 # Parameters
 nc: 80  # number of classes
 scales: # [depth, width, max_channels]
-  m: [0.67, 0.75, 768] #184 layers, 18,585,712 parameters, 18,585,696 gradients, 93.8 GFLOPs
+  m: [0.67, 0.75, 768] #YOLOv8m-goldFCEv10 summary: 206 layers, 16,049,488 parameters, 16,049,472 gradients, 78.0 GFLOPs
 
 # =========================
 # Backbone

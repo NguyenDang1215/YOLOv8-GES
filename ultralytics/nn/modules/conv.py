@@ -795,7 +795,7 @@ class RepVGGBlock(nn.Module):
 
         padding_11 = padding - kernel_size // 2
 
-        self.nonlinearity = nn.ReLU()
+        self.nonlinearity = nn.Mish()
 
         if use_se:
             raise NotImplementedError("se block not supported yet")
