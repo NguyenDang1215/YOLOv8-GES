@@ -66,7 +66,8 @@ from .block import (
     EMA,
     Fast_C2f,
     Fast_C2f_EMA,
-    Fast_C2f_SimAM
+    Fast_C2f_SimAM,
+    Fast_C2f_LSKA,
 )
 from .conv import (
     BiFormer,
@@ -216,5 +217,6 @@ __all__ = (
     "EMA",
     "Fast_C2f",
     "Fast_C2f_EMA",
-    "Fast_C2f_SimAM"
+    "Fast_C2f_SimAM",
+    "Fast_C2f_LSKA",
 )

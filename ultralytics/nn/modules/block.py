@@ -9,7 +9,7 @@ import torch.nn.functional as F
 
 from ultralytics.utils.torch_utils import fuse_conv_and_bn
 
-from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, autopad, SimAM, SimConv
+from .conv import Conv, DWConv, DropPath, GhostConv, LightConv, RepConv, autopad, SimAM, SimConv
 from .transformer import TransformerBlock
 
 __all__ = (
@@ -60,6 +60,7 @@ __all__ = (
     "Fast_C2f",
     "Fast_C2f_SimAM",
     "Fast_C2f_EMA",
+    "Fast_C2f_LSKA",
     
 )
 
@@ -2156,7 +2157,6 @@ class C2f_DSC(nn.Module):
 import torch
 import torch.nn as nn
 from .conv import Conv  # Đảm bảo đã import lớp Conv chuẩn của Ultralytics
-
 class PConv(nn.Module):
     """Partial Convolution (PConv) trích xuất không gian trên một phần số kênh."""
     def __init__(self, dim, n_div=4, forward='split_cat'):
@@ -2191,7 +2191,7 @@ class FasterBlock(nn.Module):
         self.mlp_ratio = mlp_ratio
         self.drop_path = nn.Identity() 
         self.n_div = n_div
-        
+
         self.spatial_mixing = PConv(dim, n_div)
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = nn.Sequential(
@@ -2210,22 +2210,22 @@ class EMA(nn.Module):
     """Efficient Multi-Scale Attention Module (Bản vá lỗi tương thích mọi width_multiple)."""
     def __init__(self, channels, factor=32):
         super(EMA, self).__init__()
-        
+
         # CƠ CHẾ VÁ LỖI: Tự động tìm số nhóm hợp lý nhất chia hết cho số lượng channels
         self.groups = factor
         for f in [factor, 16, 8, 4, 2, 1]:
             if channels % f == 0:
                 self.groups = f
                 break
-        
+
         # Số kênh thực tế trong mỗi group sau khi chia nhóm
         channels_per_group = channels // self.groups
-        
+
         self.softmax = nn.Softmax(-1)
         self.agp = nn.AdaptiveAvgPool2d((1, 1))
         self.pool_h = nn.AdaptiveAvgPool2d((None, 1))
         self.pool_w = nn.AdaptiveAvgPool2d((1, None))
-        
+
         self.gn = nn.GroupNorm(channels_per_group, channels_per_group)
         self.conv1x1 = nn.Conv2d(channels_per_group, channels_per_group, kernel_size=1, stride=1, padding=0)
         self.conv3x3 = nn.Conv2d(channels_per_group, channels_per_group, kernel_size=3, stride=1, padding=1)
@@ -2233,29 +2233,28 @@ class EMA(nn.Module):
     def forward(self, x):
         b, c, h, w = x.size()
         group_x = x.reshape(b * self.groups, -1, h, w)  # Bây giờ luôn an toàn, không lo lỗi matrix size
-        
+
         x_h = self.pool_h(group_x)
         x_w = self.pool_w(group_x).permute(0, 1, 3, 2)
-        
+
         hw = self.conv1x1(torch.cat([x_h, x_w], dim=2))
         x_h, x_w = torch.split(hw, [h, w], dim=2)
-        
+
         x1 = self.gn(group_x * x_h.sigmoid() * x_w.permute(0, 1, 3, 2).sigmoid())
         x2 = self.conv3x3(group_x)
-        
+
         # Cross-spatial learning (Học chéo không gian đa quy mô)
         x11 = self.softmax(self.agp(x1).reshape(b * self.groups, -1, 1).permute(0, 2, 1))
         x12 = x2.reshape(b * self.groups, c // self.groups, -1)  
         x21 = self.softmax(self.agp(x2).reshape(b * self.groups, -1, 1).permute(0, 2, 1))
         x22 = x1.reshape(b * self.groups, c // self.groups, -1)  
-        
+
         weights = (torch.matmul(x11, x12) + torch.matmul(x21, x22)).reshape(b * self.groups, 1, h, w)
         return (group_x * weights.sigmoid()).reshape(b, c, h, w)
 
-
 class Fast_C2f(nn.Module):
     # Khối Fast-C2f ứng dụng trong YOLO
-    def __init__(self, c1, c2, n=1, shortcut=False, g=1, e=0.5):
+    def __init__(self, c1, c2, n=3, shortcut=False, g=1, e=0.5):
         super().__init__()
         self.c = int(c2 * e) 
         self.cv1 = Conv(c1, 2 * self.c, 1, 1)
@@ -2268,83 +2267,77 @@ class Fast_C2f(nn.Module):
         return self.cv2(torch.cat(y, 1))
     
 class Fast_C2f_EMA(nn.Module):
-    def __init__(self, c1, c2, n=3, e=0.5):
+    # Khối Fast-C2f ứng dụng trong YOLO
+    def __init__(self, c1, c2, n=3, shortcut=False, g=1, e=0.5):
         super().__init__()
-
-        self.c = int(c2 * e)
-
-        self.cv1 = nn.Sequential(
-            nn.Conv2d(c1, 2 * self.c, 1, bias=False),
-            nn.BatchNorm2d(2 * self.c),
-            nn.SiLU()
-        )
-
-        # EMA thay SimAM
-        self.attn = EMA(self.c)
-
-        # Các FasterBlock
-        self.m = nn.ModuleList(
-            FasterBlock(self.c, self.c)
-            for _ in range(n)
-        )
-
-        # 2 nhánh split + SimAM + n FasterBlock
-        self.cv2 = nn.Sequential(
-            nn.Conv2d((n + 3) * self.c, c2, 1, bias=False),
-            nn.BatchNorm2d(c2),
-            nn.SiLU()
-        )
+        self.c = int(c2 * e) 
+        self.cv1 = Conv(c1, 2 * self.c, 1, 1)
+        self.cv2 = Conv((2 + n) * self.c, c2, 1)
+        self.m = nn.ModuleList(FasterBlock(self.c, self.c) for _ in range(n))
+        self.ema = EMA(self.c)
 
     def forward(self, x):
-
-        y = list(self.cv1(x).chunk(2, dim=1))
-
-        z = self.attn(y[-1])
-        y.append(z)
-
-        for m in self.m:
-            z = m(z)
-            y.append(z)
-
-        return self.cv2(torch.cat(y, dim=1))
+        y = list(self.cv1(x).chunk(2, 1))
+        y[-1] = self.ema(y[-1])  # Áp dụng EMA lên phần kênh thứ hai sau chunk
+        y.extend(m(y[-1]) for m in self.m)
+        return self.cv2(torch.cat(y, 1))
     
 class Fast_C2f_SimAM(nn.Module):
-    def __init__(self, c1, c2, n=3, e=0.5):
+    # Khối Fast-C2f ứng dụng trong YOLO
+    def __init__(self, c1, c2, n=3, shortcut=False, g=1, e=0.5):
         super().__init__()
-
-        self.c = int(c2 * e)
-
-        self.cv1 = nn.Sequential(
-            nn.Conv2d(c1, 2 * self.c, 1, bias=False),
-            nn.BatchNorm2d(2 * self.c),
-            nn.SiLU()
-        )
-
-        # SimAM thay EMA
-        self.attn = SimAM()
-
-        # Các FasterBlock
-        self.m = nn.ModuleList(
-            FasterBlock(self.c, self.c)
-            for _ in range(n)
-        )
-
-        # 2 nhánh split + SimAM + n FasterBlock
-        self.cv2 = nn.Sequential(
-            nn.Conv2d((n + 3) * self.c, c2, 1, bias=False),
-            nn.BatchNorm2d(c2),
-            nn.SiLU()
-        )
+        self.c = int(c2 * e) 
+        self.cv1 = Conv(c1, 2 * self.c, 1, 1)
+        self.cv2 = Conv((2 + n) * self.c, c2, 1)
+        self.m = nn.ModuleList(FasterBlock(self.c, self.c) for _ in range(n))
+        self.ema = SimAM()  # Sử dụng SimAM thay vì EMA để tăng cường chú ý không gian
 
     def forward(self, x):
+        y = list(self.cv1(x).chunk(2, 1))
+        y[-1] = self.ema(y[-1])  # Áp dụng SimAM lên phần kênh thứ hai sau chunk
+        y.extend(m(y[-1]) for m in self.m)
+        return self.cv2(torch.cat(y, 1))
+    
+class LSKA(nn.Module):
+    """
+    Large Separable Kernel Attention (LSKA)
+    Mang lại vùng đón nhận đặc trưng khổng lồ cho Backbone mà không tốn FLOPs.
+    Tối ưu hoàn hảo cho ngữ cảnh giao thông tầm xa của tập dữ liệu KITTI.
+    """
+    def __init__(self, dim, k_size=11):
+        super().__init__()
+        # Phân rã nhân lớn thành các tích chập một chiều Depthwise (Ngang và Dọc)
+        self.conv0h = nn.Conv2d(dim, dim, kernel_size=(1, k_size), padding=(0, k_size//2), groups=dim, bias=False)
+        self.conv0v = nn.Conv2d(dim, dim, kernel_size=(k_size, 1), padding=(k_size//2, 0), groups=dim, bias=False)
+        
+        # Nhánh Dilated để mở rộng tầm nhìn bao quát toàn làn đường
+        self.conv_spatial_h = nn.Conv2d(dim, dim, kernel_size=(1, 7), stride=1, padding=(0, 9), dilation=(1, 3), groups=dim, bias=False)
+        self.conv_spatial_v = nn.Conv2d(dim, dim, kernel_size=(7, 1), stride=1, padding=(9, 0), dilation=(3, 1), groups=dim, bias=False)
+        
+        self.conv1x1 = nn.Conv2d(dim, dim, kernel_size=1, bias=False)
+        self.bn = nn.BatchNorm2d(dim)
+        self.sigmoid = nn.Sigmoid()
 
-        y = list(self.cv1(x).chunk(2, dim=1))
+    def forward(self, x):
+        attn = self.conv0h(x)
+        attn = self.conv0v(attn)
+        attn = self.conv_spatial_h(attn)
+        attn = self.conv_spatial_v(attn)
+        attn = self.bn(self.conv1x1(attn))
+        return x * self.sigmoid(attn) # Gán trọng số chú ý tầm nhìn lớn
 
-        z = self.attn(y[-1])
-        y.append(z)
+class Fast_C2f_LSKA(nn.Module):
+    # Khối Fast-C2f ứng dụng trong YOLO
+    def __init__(self, c1, c2, n=3, shortcut=False, g=1, e=0.5):
+        super().__init__()
+        self.c = int(c2 * e) 
+        self.cv1 = Conv(c1, 2 * self.c, 1, 1)
+        self.cv2 = Conv((2 + n) * self.c, c2, 1)
+        self.m = nn.ModuleList(FasterBlock(self.c, self.c) for _ in range(n))
+        self.ema = LSKA(self.c)  # Sử dụng LSKA để tăng cường chú ý tầm nhìn lớn
 
-        for m in self.m:
-            z = m(z)
-            y.append(z)
-
-        return self.cv2(torch.cat(y, dim=1))
+    def forward(self, x):
+        y = list(self.cv1(x).chunk(2, 1))
+        y[-1] = self.ema(y[-1])  # Áp dụng LSKA lên phần kênh thứ hai sau chunk
+        y.extend(m(y[-1]) for m in self.m)
+        return self.cv2(torch.cat(y, 1))
