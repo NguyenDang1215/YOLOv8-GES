@@ -1,7 +1,7 @@
 from ultralytics import YOLO
 
 def main():
-    model = YOLO("yologoldP2Fastc2f.pt")
+    model = YOLO("yologoldP2v0.pt")
 
     metrics = model.val(
         data="C:\\Users\\Nguyen\\Final_report\\YOLO-APD\\data\\data.yaml",
