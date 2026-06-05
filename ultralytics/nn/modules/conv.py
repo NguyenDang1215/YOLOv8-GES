@@ -1566,3 +1566,90 @@ class Ml_p(nn.Module):
 
     def forward(self, x):
         return self.drop(self.fc2(self.drop(self.act(self.fc1(x)))))
+
+
+
+#SCOPE-YOLO
+import torch
+import torch.nn as nn
+
+class SpatioChannelGate(nn.Module):
+    """
+    Triển khai A_s(·): Cổng chọn lọc kết hợp Không gian - Kênh (Spatio-channel joint gating)
+    Giúp ức chế nhiễu nền và nhấn mạnh ranh giới cấu trúc của tháp điện.
+    """
+    def __init__(self, channels):
+        super().__init__()
+        # Nhánh hiệu chuẩn kênh (Channel Re-calibration)
+        self.channel_gate = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(channels, channels // 4, kernel_size=1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(channels // 4, channels, kernel_size=1, bias=False),
+            nn.Sigmoid()
+        )
+        # Nhánh chọn lọc không gian (Spatial Selection)
+        self.spatial_gate = nn.Sequential(
+            nn.Conv2d(channels, 1, kernel_size=7, padding=3, bias=False),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        # Áp dụng cơ chế Attention theo Kênh và Không gian
+        c_attn = self.channel_gate(x)
+        s_attn = self.spatial_gate(x)
+        # Kết hợp chung (Joint gating)
+        return x * c_attn * s_attn
+
+
+class CFABlock(nn.Module):
+    """
+    Triển khai Cross-Scale Feature Aggregation (CFA)
+    Công thức: Y = \sum_s \alpha_s * A_s(\Phi_s(X))
+    """
+    def __init__(self, in_channels, out_channels, scales=(1, 3, 5)):
+        super().__init__()
+        self.scales = scales
+        
+        # 1. \Phi_s(·): Chuỗi tích chập với các trường tiếp nhận khác nhau (Dilated Convolutions)
+        # Sử dụng dilation rates (1, 3, 5) để mở rộng trường tiếp nhận mà không làm giảm độ phân giải
+        self.phi_branches = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=d, dilation=d, bias=False),
+                nn.BatchNorm2d(out_channels),
+                nn.SiLU(inplace=True)  # YOLO thường chuộng SiLU
+            ) for d in scales
+        ])
+        
+        # 2. A_s(·): Cổng kết hợp không gian - kênh cho TỪNG nhánh (tỷ lệ)
+        self.gate_branches = nn.ModuleList([
+            SpatioChannelGate(out_channels) for _ in scales
+        ])
+        
+        # 3. Mạng cổng (Gating Network) sinh ra trọng số \alpha_s thích ứng
+        # Ràng buộc: \sum \alpha_s = 1 và \alpha_s > 0 (sử dụng hàm Softmax)
+        self.alpha_net = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(in_channels, len(scales), kernel_size=1),
+            nn.Softmax(dim=1) 
+        )
+        
+    def forward(self, x):
+        # Tính toán trọng số thích ứng \alpha_s cho từng scale
+        # Shape của alphas: (Batch, Số_lượng_scale, 1, 1)
+        alphas = self.alpha_net(x)
+        
+        out = 0
+        for i in range(len(self.scales)):
+            # Bước 1: Đi qua chuỗi tích chập \Phi_s(X)
+            phi_x = self.phi_branches[i](x)
+            
+            # Bước 2: Đi qua cổng chọn lọc A_s(...)
+            a_x = self.gate_branches[i](phi_x)
+            
+            # Bước 3: Nhân với trọng số thích ứng \alpha_s và cộng dồn (Tổng hợp \sum)
+            # Trích xuất alpha_s tương ứng cho nhánh hiện tại
+            alpha_s = alphas[:, i:i+1, :, :] 
+            out += alpha_s * a_x
+            
+        return out
