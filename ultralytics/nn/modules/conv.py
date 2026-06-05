@@ -1603,10 +1603,6 @@ class SpatioChannelGate(nn.Module):
 
 
 class CFABlock(nn.Module):
-    """
-    Triển khai Cross-Scale Feature Aggregation (CFA)
-    Công thức: Y = \sum_s \alpha_s * A_s(\Phi_s(X))
-    """
     def __init__(self, in_channels, out_channels, scales=(1, 3, 5)):
         super().__init__()
         self.scales = scales
