@@ -1,5 +1,6 @@
 from ultralytics import YOLO
 
+
 def main():
     model = YOLO("yologoldP2v0.pt")
 
@@ -9,11 +10,12 @@ def main():
         batch=16,
         imgsz=640,
         device=0,
-        workers=0  # tránh lỗi multiprocessing trên Windows
+        workers=0,  # tránh lỗi multiprocessing trên Windows
     )
 
     print(f"mAP50: {metrics.box.map50:.4f}")
     print(f"mAP50-95: {metrics.box.map:.4f}")
+
 
 if __name__ == "__main__":
     main()
