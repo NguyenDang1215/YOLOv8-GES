@@ -718,7 +718,7 @@ class SimConv(nn.Module):
         )
         self.bn = nn.BatchNorm2d(c2)
         # self.act = nn.LeakyReLU()
-        self.act = nn.LeakyReLU()
+        self.act = nn.Mish()
 
     def forward(self, x):
         return self.act(self.bn(self.conv(x)))
