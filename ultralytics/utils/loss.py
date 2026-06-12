@@ -150,7 +150,7 @@ class BboxLoss(nn.Module):
             pred_bboxes[fg_mask], 
             target_bboxes[fg_mask], 
             xywh=False, 
-            WIoU =True, 
+            CIoU =True, 
             iou_mean=iou_mean
         )
         
