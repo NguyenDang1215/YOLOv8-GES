@@ -1,7 +1,7 @@
 from ultralytics import YOLO
 
 def main():
-    model = YOLO("yolov8m.onnx")  # tải mô hình đã huấn luyện
+    model = YOLO("v5.pt")  # tải mô hình đã huấn luyện
 
     metrics = model.val(
         data="C:\\Users\\Nguyen\\Final_report\\YOLO-APD\\data\\data.yaml",
