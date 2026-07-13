@@ -9,7 +9,7 @@ import torch.nn.functional as F
 
 from ultralytics.utils.torch_utils import fuse_conv_and_bn
 
-from .conv import Conv, DWConv, DropPath, GhostConv, LightConv, RepConv, autopad, SimAM, SimConv
+from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, SimAM, SimConv, autopad
 from .transformer import TransformerBlock
 
 __all__ = (
@@ -21,6 +21,7 @@ __all__ = (
     "CIB",
     "DFL",
     "ELAN1",
+    "EMA",
     "PSA",
     "SPP",
     "SPPELAN",
@@ -31,20 +32,28 @@ __all__ = (
     "BNContrastiveHead",
     "Bottleneck",
     "BottleneckCSP",
+    "Bottleneck_DSC",
     "C2f",
     "C2fAttn",
     "C2fCIB",
     "C2fPSA",
+    "C2f_DSC",
     "C3Ghost",
     "C3k2",
     "C3x",
     "CBFuse",
     "CBLinear",
     "ContrastiveHead",
+    "Fast_C2f",
+    "Fast_C2f_EMA",
+    "Fast_C2f_LSKA",
+    "Fast_C2f_SimAM",
+    "FasterBlock",
     "GhostBottleneck",
     "HGBlock",
     "HGStem",
     "ImagePoolingAttn",
+    "PConv",
     "Proto",
     "RepC3",
     "RepNCSPELAN4",
@@ -52,16 +61,6 @@ __all__ = (
     "ResNetLayer",
     "SCDown",
     "TorchVision",
-    "Bottleneck_DSC",
-    "C2f_DSC",
-    "PConv",
-    "FasterBlock",
-    "EMA",
-    "Fast_C2f",
-    "Fast_C2f_SimAM",
-    "Fast_C2f_EMA",
-    "Fast_C2f_LSKA",
-    
 )
 
 
@@ -246,9 +245,10 @@ class SPPF(nn.Module):
         y = self.cv2(torch.cat(y, 1))
         return y + x if getattr(self, "add", False) else y
 
+
 class SimSPPF(nn.Module):
-    '''Simplified SPPF with ReLU VAN_activation'''
-    
+    """Simplified SPPF with ReLU VAN_activation."""
+
     def __init__(self, c1, c2, k=5):
         super().__init__()
         c_ = c1 // 2
@@ -256,7 +256,7 @@ class SimSPPF(nn.Module):
         self.cv2 = SimConv(c_ * 4, c2, 1, 1)
         self.m = nn.MaxPool2d(kernel_size=k, stride=1, padding=k // 2)
         self.simam = SimAM()
-    
+
     def forward(self, x):
         x = self.cv1(x)
         y1 = self.m(x)
@@ -265,6 +265,7 @@ class SimSPPF(nn.Module):
         out = torch.cat([x, y1, y2, y3], 1)
         out = self.simam(out)
         return self.cv2(out)
+
 
 class C1(nn.Module):
     """CSP Bottleneck with 1 convolution."""
@@ -2101,26 +2102,29 @@ class RealNVP(nn.Module):
         z, log_det = self.backward_p(x)
         return self.prior.log_prob(z) + log_det
 
+
 # introduce paper
 
-    
-#new module for paper
+
+# new module for paper
 class Bottleneck_DSC(nn.Module):
-    """Cấu trúc tinh gọn: Tránh lặp Pointwise liên tiếp"""
+    """Cấu trúc tinh gọn: Tránh lặp Pointwise liên tiếp."""
+
     def __init__(self, c1, c2, shortcut=True, g=1, k=((3, 3), (3, 3)), e=1.0):
         super().__init__()
         # c1 và c2 luôn bằng nhau trong C2f (vì e=1.0 bên ngoài)
-        
+
         # Lớp 1: Chỉ làm nhiệm vụ lọc không gian thuần túy (Depthwise)
-        self.cv1 = DWConv(c1, c1, k[0], 1) 
-        
+        self.cv1 = DWConv(c1, c1, k[0], 1)
+
         # Lớp 2: Dùng Conv 1x1 tiêu chuẩn để TRỘN KÊNH mạnh mẽ (Pointwise)
-        self.cv2 = Conv(c1, c2, 1, 1) 
-        
+        self.cv2 = Conv(c1, c2, 1, 1)
+
         self.add = shortcut and c1 == c2
 
     def forward(self, x):
         return x + self.cv2(self.cv1(x)) if self.add else self.cv2(self.cv1(x))
+
 
 class C2f_DSC(nn.Module):
     """Khối C2f cải tiến hoàn toàn mới áp dụng Bottleneck_DSC phục vụ phần cứng Edge."""
@@ -2129,18 +2133,16 @@ class C2f_DSC(nn.Module):
         """Khởi tạo khối CSP Bottleneck thế hệ mới tích hợp DSC."""
         super().__init__()
         self.c = int(c2 * e)  # Kênh ẩn (bằng một nửa số kênh đầu ra mục tiêu)
-        
+
         # Lớp cv1 gốc: Nâng kênh lên gấp đôi để chuẩn bị split/chunk
         self.cv1 = Conv(c1, 2 * self.c, 1, 1)
-        
+
         # Lớp cv2 gốc: Gom tất cả các nhánh cat lại và nén về kênh c2 ban đầu
-        self.cv2 = Conv((2 + n) * self.c, c2, 1)  
-        
+        self.cv2 = Conv((2 + n) * self.c, c2, 1)
+
         # Thay thế Bottleneck gốc bằng Bottleneck_DSC vừa tạo phía trên
         # Giữ nguyên cấu hình e=1.0 để chạy chuỗi trích xuất mượt mà
-        self.m = nn.ModuleList(
-            Bottleneck_DSC(self.c, self.c, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n)
-        )
+        self.m = nn.ModuleList(Bottleneck_DSC(self.c, self.c, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Luồng chạy forward pass dùng chunk."""
@@ -2154,28 +2156,31 @@ class C2f_DSC(nn.Module):
         y = [y[0], y[1]]
         y.extend(m(y[-1]) for m in self.m)
         return self.cv2(torch.cat(y, 1))
-    
+
+
 import torch
 import torch.nn as nn
-from .conv import Conv  # Đảm bảo đã import lớp Conv chuẩn của Ultralytics
+
+
 class PConv(nn.Module):
     """Partial Convolution (PConv) trích xuất không gian trên một phần số kênh."""
-    def __init__(self, dim, n_div=4, forward='split_cat'):
+
+    def __init__(self, dim, n_div=4, forward="split_cat"):
         super().__init__()
         self.dim_conv3 = dim // n_div
         self.dim_untouched = dim - self.dim_conv3
         self.partial_conv3 = nn.Conv2d(self.dim_conv3, self.dim_conv3, 3, 1, 1, bias=False)
 
-        if forward == 'slicing':
+        if forward == "slicing":
             self.forward = self.forward_slicing
-        elif forward == 'split_cat':
+        elif forward == "split_cat":
             self.forward = self.forward_split_cat
         else:
             raise NotImplementedError
 
     def forward_slicing(self, x):
         x = x.clone()
-        x[:, :self.dim_conv3, :, :] = self.partial_conv3(x[:, :self.dim_conv3, :, :])
+        x[:, : self.dim_conv3, :, :] = self.partial_conv3(x[:, : self.dim_conv3, :, :])
         return x
 
     def forward_split_cat(self, x):
@@ -2186,19 +2191,17 @@ class PConv(nn.Module):
 
 class FasterBlock(nn.Module):
     """FasterBlock kết hợp PConv 3x3 và chuỗi MLP 1x1 nhằm tối ưu tốc độ tính toán."""
+
     def __init__(self, inc, dim, n_div=4, mlp_ratio=2, drop_path=0.1):
         super().__init__()
         self.dim = dim
         self.mlp_ratio = mlp_ratio
-        self.drop_path = nn.Identity() 
+        self.drop_path = nn.Identity()
         self.n_div = n_div
 
         self.spatial_mixing = PConv(dim, n_div)
         mlp_hidden_dim = int(dim * mlp_ratio)
-        self.mlp = nn.Sequential(
-            Conv(dim, mlp_hidden_dim, 1),
-            Conv(mlp_hidden_dim, dim, 1)
-        )
+        self.mlp = nn.Sequential(Conv(dim, mlp_hidden_dim, 1), Conv(mlp_hidden_dim, dim, 1))
 
     def forward(self, x):
         shortcut = x
@@ -2209,8 +2212,9 @@ class FasterBlock(nn.Module):
 
 class EMA(nn.Module):
     """Efficient Multi-Scale Attention Module (Bản vá lỗi tương thích mọi width_multiple)."""
+
     def __init__(self, channels, factor=32):
-        super(EMA, self).__init__()
+        super().__init__()
 
         # CƠ CHẾ VÁ LỖI: Tự động tìm số nhóm hợp lý nhất chia hết cho số lượng channels
         self.groups = factor
@@ -2246,18 +2250,19 @@ class EMA(nn.Module):
 
         # Cross-spatial learning (Học chéo không gian đa quy mô)
         x11 = self.softmax(self.agp(x1).reshape(b * self.groups, -1, 1).permute(0, 2, 1))
-        x12 = x2.reshape(b * self.groups, c // self.groups, -1)  
+        x12 = x2.reshape(b * self.groups, c // self.groups, -1)
         x21 = self.softmax(self.agp(x2).reshape(b * self.groups, -1, 1).permute(0, 2, 1))
-        x22 = x1.reshape(b * self.groups, c // self.groups, -1)  
+        x22 = x1.reshape(b * self.groups, c // self.groups, -1)
 
         weights = (torch.matmul(x11, x12) + torch.matmul(x21, x22)).reshape(b * self.groups, 1, h, w)
         return (group_x * weights.sigmoid()).reshape(b, c, h, w)
+
 
 class Fast_C2f(nn.Module):
     # Khối Fast-C2f ứng dụng trong YOLO
     def __init__(self, c1, c2, n=3, shortcut=False, g=1, e=0.5):
         super().__init__()
-        self.c = int(c2 * e) 
+        self.c = int(c2 * e)
         self.cv1 = Conv(c1, 2 * self.c, 1, 1)
         self.cv2 = Conv((2 + n) * self.c, c2, 1)
         self.m = nn.ModuleList(FasterBlock(self.c, self.c) for _ in range(n))
@@ -2266,12 +2271,13 @@ class Fast_C2f(nn.Module):
         y = list(self.cv1(x).chunk(2, 1))
         y.extend(m(y[-1]) for m in self.m)
         return self.cv2(torch.cat(y, 1))
-    
+
+
 class Fast_C2f_EMA(nn.Module):
     # Khối Fast-C2f ứng dụng trong YOLO
     def __init__(self, c1, c2, n=3, shortcut=False, g=1, e=0.5):
         super().__init__()
-        self.c = int(c2 * e) 
+        self.c = int(c2 * e)
         self.cv1 = Conv(c1, 2 * self.c, 1, 1)
         self.cv2 = Conv((2 + n) * self.c, c2, 1)
         self.m = nn.ModuleList(FasterBlock(self.c, self.c) for _ in range(n))
@@ -2282,12 +2288,13 @@ class Fast_C2f_EMA(nn.Module):
         y[-1] = self.ema(y[-1])  # Áp dụng EMA lên phần kênh thứ hai sau chunk
         y.extend(m(y[-1]) for m in self.m)
         return self.cv2(torch.cat(y, 1))
-    
+
+
 class Fast_C2f_SimAM(nn.Module):
     # Khối Fast-C2f ứng dụng trong YOLO
     def __init__(self, c1, c2, n=3, shortcut=False, g=1, e=0.5):
         super().__init__()
-        self.c = int(c2 * e) 
+        self.c = int(c2 * e)
         self.cv1 = Conv(c1, 2 * self.c, 1, 1)
         self.cv2 = Conv((2 + n) * self.c, c2, 1)
         self.m = nn.ModuleList(FasterBlock(self.c, self.c) for _ in range(n))
@@ -2298,23 +2305,27 @@ class Fast_C2f_SimAM(nn.Module):
         y[-1] = self.ema(y[-1])  # Áp dụng SimAM lên phần kênh thứ hai sau chunk
         y.extend(m(y[-1]) for m in self.m)
         return self.cv2(torch.cat(y, 1))
-    
+
+
 class LSKA(nn.Module):
+    """Large Separable Kernel Attention (LSKA) Mang lại vùng đón nhận đặc trưng khổng lồ cho Backbone mà không tốn
+    FLOPs. Tối ưu hoàn hảo cho ngữ cảnh giao thông tầm xa của tập dữ liệu KITTI.
     """
-    Large Separable Kernel Attention (LSKA)
-    Mang lại vùng đón nhận đặc trưng khổng lồ cho Backbone mà không tốn FLOPs.
-    Tối ưu hoàn hảo cho ngữ cảnh giao thông tầm xa của tập dữ liệu KITTI.
-    """
+
     def __init__(self, dim, k_size=11):
         super().__init__()
         # Phân rã nhân lớn thành các tích chập một chiều Depthwise (Ngang và Dọc)
-        self.conv0h = nn.Conv2d(dim, dim, kernel_size=(1, k_size), padding=(0, k_size//2), groups=dim, bias=False)
-        self.conv0v = nn.Conv2d(dim, dim, kernel_size=(k_size, 1), padding=(k_size//2, 0), groups=dim, bias=False)
-        
+        self.conv0h = nn.Conv2d(dim, dim, kernel_size=(1, k_size), padding=(0, k_size // 2), groups=dim, bias=False)
+        self.conv0v = nn.Conv2d(dim, dim, kernel_size=(k_size, 1), padding=(k_size // 2, 0), groups=dim, bias=False)
+
         # Nhánh Dilated để mở rộng tầm nhìn bao quát toàn làn đường
-        self.conv_spatial_h = nn.Conv2d(dim, dim, kernel_size=(1, 7), stride=1, padding=(0, 9), dilation=(1, 3), groups=dim, bias=False)
-        self.conv_spatial_v = nn.Conv2d(dim, dim, kernel_size=(7, 1), stride=1, padding=(9, 0), dilation=(3, 1), groups=dim, bias=False)
-        
+        self.conv_spatial_h = nn.Conv2d(
+            dim, dim, kernel_size=(1, 7), stride=1, padding=(0, 9), dilation=(1, 3), groups=dim, bias=False
+        )
+        self.conv_spatial_v = nn.Conv2d(
+            dim, dim, kernel_size=(7, 1), stride=1, padding=(9, 0), dilation=(3, 1), groups=dim, bias=False
+        )
+
         self.conv1x1 = nn.Conv2d(dim, dim, kernel_size=1, bias=False)
         self.bn = nn.BatchNorm2d(dim)
         self.sigmoid = nn.Sigmoid()
@@ -2325,13 +2336,14 @@ class LSKA(nn.Module):
         attn = self.conv_spatial_h(attn)
         attn = self.conv_spatial_v(attn)
         attn = self.bn(self.conv1x1(attn))
-        return x * self.sigmoid(attn) # Gán trọng số chú ý tầm nhìn lớn
+        return x * self.sigmoid(attn)  # Gán trọng số chú ý tầm nhìn lớn
+
 
 class Fast_C2f_LSKA(nn.Module):
     # Khối Fast-C2f ứng dụng trong YOLO
     def __init__(self, c1, c2, n=3, shortcut=False, g=1, e=0.5):
         super().__init__()
-        self.c = int(c2 * e) 
+        self.c = int(c2 * e)
         self.cv1 = Conv(c1, 2 * self.c, 1, 1)
         self.cv2 = Conv((2 + n) * self.c, c2, 1)
         self.m = nn.ModuleList(FasterBlock(self.c, self.c) for _ in range(n))
