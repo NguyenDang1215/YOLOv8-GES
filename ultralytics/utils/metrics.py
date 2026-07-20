@@ -85,7 +85,7 @@ def bbox_iou(
     GIoU: bool = False,
     DIoU: bool = False,
     CIoU: bool = False,
-    WIoU: bool = False,     # <-- THÊM THAM SỐ BẬT WIoUv3 TẠI ĐÂY
+    WIoU: bool = False,  # <-- THÊM THAN SỐ BẬT WIoUv3 TẠI ĐÂY
     iou_mean: float = 0.4,  # <-- Thêm iou_mean động phục vụ cho WIoUv3
     eps: float = 1e-7,
 ) -> torch.Tensor:
@@ -112,38 +112,38 @@ def bbox_iou(
 
     # IoU cơ bản
     iou = inter / union
-    
+
     # Xử lý các loại Loss nâng cao: CIoU, DIoU, GIoU, WIoU
     if CIoU or DIoU or GIoU or WIoU:
         cw = b1_x2.maximum(b2_x2) - b1_x1.minimum(b2_x1)  # convex (smallest enclosing box) width
         ch = b1_y2.maximum(b2_y2) - b1_y1.minimum(b2_y1)  # convex height
-        
+
         # --- CODE CẤU HÌNH WIoUv3 ---
         # --- CODE CẤU HÌNH WIoUv3 CHUẨN HOÁ ---
         if WIoU:
             c2 = cw.pow(2) + ch.pow(2) + eps  # đường chéo bình phương của khung bao ngoài
             rho2 = ((b2_x1 + b2_x2 - b1_x1 - b1_x2).pow(2) + (b2_y1 + b2_y2 - b1_y1 - b1_y2).pow(2)) / 4
-            
+
             # 1. Tính WIoUv1 khoảng cách tâm thu phóng
             r_wiou = torch.exp(rho2 / (c2.detach()))
-            
+
             # 2. Cơ chế điều hướng phi đơn điệu (Non-monotonic focusing factor) của WIoUv3
             with torch.no_grad():
-                # Định nghĩa tham số tối ưu từ thực nghiệm bài báo (alpha=1.9, delta=3.0)
+                # Định nghĩa than số tối ưu từ thực nghiệm bài báo (alpha=1.9, delta=3.0)
                 alpha = 1.9
                 delta = 3.0
-                
+
                 # Tính độ lệch giá trị ngoại lai (outlier degree) dựa trên iou_mean động của batch
                 beta = (r_wiou * (1.0 - iou)) / (iou_mean + eps)
-                
+
                 # Tính gradient gain (hệ số r) giúp giảm trọng số mẫu quá nhiễu/quá khó
                 r = beta / (delta * (alpha ** (beta - delta)))
-            
-            # 3. Trả về giá trị tương đồng (similarity) cho Ultralytics 
+
+            # 3. Trả về giá trị tương đồng (similarity) cho Ultralytics
             # Định nghĩa Loss_WIoUv3 = r * r_wiou * (1.0 - iou)
             # Do Ultralytics tính Loss = 1.0 - trả_về, nên ta trả về: 1.0 - Loss_WIoUv3
             return 1.0 - (r * r_wiou * (1.0 - iou))
-            
+
         # Giữ nguyên logic cũ của Ultralytics cho các loss khác
         if CIoU or DIoU:  # Distance or Complete IoU
             c2 = cw.pow(2) + ch.pow(2) + eps  # convex diagonal squared
@@ -154,10 +154,10 @@ def bbox_iou(
                     alpha = v / (v - iou + (1 + eps))
                 return iou - (rho2 / c2 + v * alpha)  # CIoU
             return iou - rho2 / c2  # DIoU
-            
+
         c_area = cw * ch + eps  # convex area
         return iou - (c_area - union) / c_area  # GIoU
-        
+
     return iou  # IoU mộc
 
 
