@@ -8,7 +8,7 @@ from copy import deepcopy
 from pathlib import Path
 
 import torch
-import torch.nn as nn
+from torch import nn
 
 from ultralytics.nn.autobackend import check_class_names
 from ultralytics.nn.modules import (
@@ -18,7 +18,10 @@ from ultralytics.nn.modules import (
     C2PSA,
     C3,
     C3TR,
+    DSC,
     ELAN1,
+    EMA,
+    IFM,
     OBB,
     OBB26,
     PSA,
@@ -28,6 +31,8 @@ from ultralytics.nn.modules import (
     A2C2f,
     AConv,
     ADown,
+    AdvPoolFusion,
+    BiFormer,
     Bottleneck,
     BottleneckCSP,
     C2f,
@@ -48,6 +53,10 @@ from ultralytics.nn.modules import (
     Detect,
     DWConv,
     DWConvTranspose2d,
+    Fast_C2f,
+    Fast_C2f_EMA,
+    Fast_C2f_LSKA,
+    Fast_C2f_SimAM,
     Focus,
     GhostBottleneck,
     GhostConv,
@@ -55,9 +64,12 @@ from ultralytics.nn.modules import (
     HGStem,
     ImagePoolingAttn,
     Index,
+    Inject_PConv,
+    InjectionMultiSum_Auto_pool,
     LRPCHead,
     Pose,
     Pose26,
+    PyramidPoolAgg,
     RepC3,
     RepConv,
     RepNCSPELAN4,
@@ -67,32 +79,17 @@ from ultralytics.nn.modules import (
     SCDown,
     Segment,
     Segment26,
+    SimAM,
+    SimFusion_3in,
+    SimFusion_4in,
+    SimSPPF,
+    TopBasicLayer,
     TorchVision,
     WorldDetect,
     YOLOEDetect,
     YOLOESegment,
     YOLOESegment26,
     v10Detect,
-    SimFusion_4in,
-    SimFusion_3in,
-    IFM,
-    InjectionMultiSum_Auto_pool,
-    Inject_PConv,
-    PyramidPoolAgg,
-    AdvPoolFusion,
-    TopBasicLayer,
-    SimSPPF,
-    SimAM,
-    SimConv,
-    DSC,
-    PConv,
-    FasterBlock,
-    EMA,
-    Fast_C2f,
-    Fast_C2f_EMA,
-    Fast_C2f_SimAM,
-    Fast_C2f_LSKA,
-    BiFormer,
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, LOGGER, SETTINGS, WINDOWS, YAML, colorstr, emojis
 from ultralytics.utils.checks import REMOTE_FILE_PREFIXES, check_file, check_requirements, check_suffix, check_yaml
@@ -1398,11 +1395,9 @@ class SafeClass:
 
     def __init__(self, *args, **kwargs):
         """Initialize SafeClass instance, ignoring all arguments."""
-        pass
 
     def __call__(self, *args, **kwargs):
         """Run SafeClass instance, ignoring all arguments."""
-        pass
 
 
 class SafeUnpickler(pickle.Unpickler):
@@ -1658,7 +1653,7 @@ def parse_model(d, ch, verbose=True):
             Fast_C2f_EMA,
             Fast_C2f_SimAM,
             Fast_C2f_LSKA,
-            BiFormer
+            BiFormer,
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments
@@ -1781,11 +1776,7 @@ def parse_model(d, ch, verbose=True):
             c1 = ch[f]
             c2 = sum(args[0])
             args = [c1, *args]
-        elif m is InjectionMultiSum_Auto_pool:
-            c1 = ch[f[0]]
-            c2 = args[0]
-            args = [c1, *args]
-        elif m is Inject_PConv:
+        elif m is InjectionMultiSum_Auto_pool or m is Inject_PConv:
             c1 = ch[f[0]]
             c2 = args[0]
             args = [c1, *args]
@@ -1801,8 +1792,8 @@ def parse_model(d, ch, verbose=True):
             c2 = c1
             args = [*args]
         elif m is EMA:
-            c2 = ch[f]           # Tự động lấy số kênh đầu vào hiện tại (đã được scale)
-            args = [c2, *args]   # Truyền linh động vào module EMA
+            c2 = ch[f]  # Tự động lấy số kênh đầu vào hiện tại (đã được scale)
+            args = [c2, *args]  # Truyền linh động vào module EMA
         else:
             c2 = ch[f]
 
