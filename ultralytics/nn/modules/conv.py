@@ -7,13 +7,12 @@ import math
 
 import numpy as np
 import torch
-import torch.nn as nn
+from torch import nn
 
 __all__ = (
-    "DSC",
-    "SimAM",
-    "SimConv",
     "CBAM",
+    "DSC",
+    "BiFormer",
     "ChannelAttention",
     "Concat",
     "Conv",
@@ -26,8 +25,9 @@ __all__ = (
     "Index",
     "LightConv",
     "RepConv",
+    "SimAM",
+    "SimConv",
     "SpatialAttention",
-    "BiFormer"
 )
 
 
@@ -672,17 +672,18 @@ class Index(nn.Module):
         """
         return x[self.index]
 
+
 # Fix class for paper:
 class SimAM(torch.nn.Module):
     def __init__(self, e_lambda=1e-4):
-        super(SimAM, self).__init__()
+        super().__init__()
 
         self.activaton = nn.Sigmoid()
         self.e_lambda = e_lambda
 
     def __repr__(self):
         s = self.__class__.__name__ + "("
-        s += "lambda=%f)" % self.e_lambda
+        s += f"lambda={self.e_lambda:f})"
         return s
 
     @staticmethod
@@ -690,32 +691,23 @@ class SimAM(torch.nn.Module):
         return "simam"
 
     def forward(self, x):
-        b, c, h, w = x.size()
+        _b, _c, h, w = x.size()
 
         n = w * h - 1
 
         x_minus_mu_square = (x - x.mean(dim=[2, 3], keepdim=True)).pow(2)
-        y = (
-            x_minus_mu_square
-            / (
-                4
-                * (x_minus_mu_square.sum(dim=[2, 3], keepdim=True) / n + self.e_lambda)
-            )
-            + 0.5
-        )
+        y = x_minus_mu_square / (4 * (x_minus_mu_square.sum(dim=[2, 3], keepdim=True) / n + self.e_lambda)) + 0.5
 
         return x * self.activaton(y)
 
 
 class SimConv(nn.Module):
-    """Normal Conv with ReLU VAN_activation"""
+    """Normal Conv with ReLU VAN_activation."""
 
     def __init__(self, c1, c2, k=1, s=1, g=1, d=1, bias=False, p=None):
         super().__init__()
 
-        self.conv = nn.Conv2d(
-            c1, c2, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False
-        )
+        self.conv = nn.Conv2d(c1, c2, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
         self.bn = nn.BatchNorm2d(c2)
         self.act = nn.LeakyReLU()
         # self.act = nn.Mish()
@@ -726,14 +718,13 @@ class SimConv(nn.Module):
     def forward_fuse(self, x):
         return self.act(self.conv(x))
 
+
 # Yolo-gold paper:
 import torch.nn.functional as F
 
 
-def conv_bn(
-    in_channels, out_channels, kernel_size, stride, padding, groups=1, bias=False
-):
-    """Basic cell for rep-style block, including conv and bn"""
+def conv_bn(in_channels, out_channels, kernel_size, stride, padding, groups=1, bias=False):
+    """Basic cell for rep-style block, including conv and bn."""
     result = nn.Sequential()
     result.add_module(
         "conv",
@@ -752,8 +743,8 @@ def conv_bn(
 
 
 class RepVGGBlock(nn.Module):
-    """RepVGGBlock is a basic rep-style block, including training and deploy status
-    This code is based on https://github.com/DingXiaoH/RepVGG/blob/main/repvgg.py
+    """RepVGGBlock is a basic rep-style block, including training and deploy status This code is based on
+    https://github.com/DingXiaoH/RepVGG/blob/main/repvgg.py.
     """
 
     def __init__(
@@ -769,7 +760,7 @@ class RepVGGBlock(nn.Module):
         deploy=False,
         use_se=False,
     ):
-        super(RepVGGBlock, self).__init__()
+        super().__init__()
         """ Initialization of the class.
         Args:
             in_channels (int): Number of channels in the input image
@@ -817,9 +808,7 @@ class RepVGGBlock(nn.Module):
 
         else:
             self.rbr_identity = (
-                nn.BatchNorm2d(num_features=in_channels)
-                if out_channels == in_channels and stride == 1
-                else None
+                nn.BatchNorm2d(num_features=in_channels) if out_channels == in_channels and stride == 1 else None
             )
             self.rbr_dense = conv_bn(
                 in_channels=in_channels,
@@ -839,7 +828,7 @@ class RepVGGBlock(nn.Module):
             )
 
     def forward(self, inputs):
-        """Forward process"""
+        """Forward process."""
         if hasattr(self, "rbr_reparam"):
             return self.nonlinearity(self.se(self.rbr_reparam(inputs)))
 
@@ -848,9 +837,7 @@ class RepVGGBlock(nn.Module):
         else:
             id_out = self.rbr_identity(inputs)
 
-        return self.nonlinearity(
-            self.se(self.rbr_dense(inputs) + self.rbr_1x1(inputs) + id_out)
-        )
+        return self.nonlinearity(self.se(self.rbr_dense(inputs) + self.rbr_1x1(inputs) + id_out))
 
     def get_equivalent_kernel_bias(self):
         kernel3x3, bias3x3 = self._fuse_bn_tensor(self.rbr_dense)
@@ -881,9 +868,7 @@ class RepVGGBlock(nn.Module):
             assert isinstance(branch, nn.BatchNorm2d)
             if not hasattr(self, "id_tensor"):
                 input_dim = self.in_channels // self.groups
-                kernel_value = np.zeros(
-                    (self.in_channels, input_dim, 3, 3), dtype=np.float32
-                )
+                kernel_value = np.zeros((self.in_channels, input_dim, 3, 3), dtype=np.float32)
                 for i in range(self.in_channels):
                     kernel_value[i, i % input_dim, 1, 1] = 1
                 self.id_tensor = torch.from_numpy(kernel_value).to(branch.weight.device)
@@ -962,7 +947,7 @@ class SimFusion_3in(nn.Module):
         self.downsample = nn.functional.adaptive_avg_pool2d
 
     def forward(self, x):
-        N, C, H, W = x[1].shape
+        _N, _C, H, W = x[1].shape
         output_size = (H, W)
 
         if torch.onnx.is_in_onnx_export():
@@ -971,9 +956,7 @@ class SimFusion_3in(nn.Module):
 
         x0 = self.cv1(self.downsample(x[0], output_size))
         x1 = self.cv2(x[1])
-        x2 = self.cv3(
-            F.interpolate(x[2], size=(H, W), mode="bilinear", align_corners=False)
-        )
+        x2 = self.cv3(F.interpolate(x[2], size=(H, W), mode="bilinear", align_corners=False))
         return self.cv_fuse(torch.cat((x0, x1, x2), dim=1))
 
 
@@ -984,7 +967,7 @@ class SimFusion_4in(nn.Module):
 
     def forward(self, x):
         x_l, x_m, x_s, x_n = x
-        B, C, H, W = x_s.shape
+        _B, _C, H, W = x_s.shape
         output_size = np.array([H, W])
 
         if torch.onnx.is_in_onnx_export():
@@ -997,6 +980,7 @@ class SimFusion_4in(nn.Module):
         out = torch.cat([x_l, x_m, x_s, x_n], 1)
         return out
 
+
 class IFM(nn.Module):
     def __init__(self, inc, ouc, embed_dim_p=96, fuse_block_num=3) -> None:
         super().__init__()
@@ -1004,7 +988,7 @@ class IFM(nn.Module):
         self.conv = nn.Sequential(
             Conv(inc, embed_dim_p),
             *[RepVGGBlock(embed_dim_p, embed_dim_p) for _ in range(fuse_block_num)],
-            Conv(embed_dim_p, sum(ouc))
+            Conv(embed_dim_p, sum(ouc)),
         )
 
     def forward(self, x):
@@ -1013,7 +997,7 @@ class IFM(nn.Module):
 
 class h_sigmoid(nn.Module):
     def __init__(self, inplace=True):
-        super(h_sigmoid, self).__init__()
+        super().__init__()
         self.relu = nn.ReLU6(inplace=inplace)
 
     def forward(self, x):
@@ -1031,13 +1015,11 @@ class InjectionMultiSum_Auto_pool(nn.Module):
         self.act = h_sigmoid()
 
     def forward(self, x):
-        """
-        x_g: global features
-        x_l: local features
+        """x_g: global features x_l: local features.
         """
         x_l, x_g = x
-        B, C, H, W = x_l.shape
-        g_B, g_C, g_H, g_W = x_g.shape
+        _B, _C, H, W = x_l.shape
+        _g_B, _g_C, g_H, _g_W = x_g.shape
         use_pool = H < g_H
 
         gloabl_info = x_g.split(self.global_inp, dim=1)[self.flag]
@@ -1055,12 +1037,8 @@ class InjectionMultiSum_Auto_pool(nn.Module):
             global_feat = avg_pool(global_feat, output_size)
 
         else:
-            sig_act = F.interpolate(
-                self.act(global_act), size=(H, W), mode="bilinear", align_corners=False
-            )
-            global_feat = F.interpolate(
-                global_feat, size=(H, W), mode="bilinear", align_corners=False
-            )
+            sig_act = F.interpolate(self.act(global_act), size=(H, W), mode="bilinear", align_corners=False)
+            global_feat = F.interpolate(global_feat, size=(H, W), mode="bilinear", align_corners=False)
 
         out = local_feat * sig_act + global_feat
         return out
@@ -1084,7 +1062,7 @@ class PyramidPoolAgg(nn.Module):
         self.conv = Conv(inc, ouc)
 
     def forward(self, inputs):
-        B, C, H, W = get_shape(inputs[-1])
+        _B, _C, H, W = get_shape(inputs[-1])
         H = (H - 1) // self.stride + 1
         W = (W - 1) // self.stride + 1
 
@@ -1102,19 +1080,17 @@ class PyramidPoolAgg(nn.Module):
 
 
 def drop_path(x, drop_prob: float = 0.0, training: bool = False):
-    """Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks).
-    This is the same as the DropConnect impl I created for EfficientNet, etc networks, however,
-    the original name is misleading as 'Drop Connect' is a different form of dropout in a separate paper...
-    See discussion: https://github.com/tensorflow/tpu/issues/494#issuecomment-532968956 ... I've opted for
-    changing the layer and argument names to 'drop path' rather than mix DropConnect as a layer name and use
-    'survival rate' as the argument.
+    """Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks). This is the same as the
+    DropConnect impl I created for EfficientNet, etc networks, however, the original name is misleading as 'Drop
+    Connect' is a different form of dropout in a separate paper... See discussion:
+    https://github.com/tensorflow/tpu/issues/494#issuecomment-532968956 ... I've opted for changing the layer and
+    argument names to 'drop path' rather than mix DropConnect as a layer name and use 'survival rate' as
+    the argument.
     """
     if drop_prob == 0.0 or not training:
         return x
     keep_prob = 1 - drop_prob
-    shape = (x.shape[0],) + (1,) * (
-        x.ndim - 1
-    )  # work with diff dim tensors, not just 2D ConvNets
+    shape = (x.shape[0],) + (1,) * (x.ndim - 1)  # work with diff dim tensors, not just 2D ConvNets
     random_tensor = keep_prob + torch.rand(shape, dtype=x.dtype, device=x.device)
     random_tensor.floor_()  # binarize
     output = x.div(keep_prob) * random_tensor
@@ -1127,9 +1103,7 @@ class Mlp(nn.Module):
         out_features = out_features or in_features
         hidden_features = hidden_features or in_features
         self.fc1 = Conv(in_features, hidden_features, act=False)
-        self.dwconv = nn.Conv2d(
-            hidden_features, hidden_features, 3, 1, 1, bias=True, groups=hidden_features
-        )
+        self.dwconv = nn.Conv2d(hidden_features, hidden_features, 3, 1, 1, bias=True, groups=hidden_features)
         self.act = nn.ReLU6()
         self.fc2 = Conv(hidden_features, out_features, act=False)
         self.drop = nn.Dropout(drop)
@@ -1145,10 +1119,10 @@ class Mlp(nn.Module):
 
 
 class DropPath(nn.Module):
-    """Drop paths (Stochastic Depth) per sample  (when applied in main path of residual blocks)."""
+    """Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks)."""
 
     def __init__(self, drop_prob=None):
-        super(DropPath, self).__init__()
+        super().__init__()
         self.drop_prob = drop_prob
 
     def forward(self, x):
@@ -1173,13 +1147,9 @@ class Attention(torch.nn.Module):
         self.proj = torch.nn.Sequential(nn.ReLU6(), Conv(self.dh, dim, act=False))
 
     def forward(self, x):  # x (B,N,C)
-        B, C, H, W = get_shape(x)
+        B, _C, H, W = get_shape(x)
 
-        qq = (
-            self.to_q(x)
-            .reshape(B, self.num_heads, self.key_dim, H * W)
-            .permute(0, 1, 3, 2)
-        )
+        qq = self.to_q(x).reshape(B, self.num_heads, self.key_dim, H * W).permute(0, 1, 3, 2)
         kk = self.to_k(x).reshape(B, self.num_heads, self.key_dim, H * W)
         vv = self.to_v(x).reshape(B, self.num_heads, self.d, H * W).permute(0, 1, 3, 2)
 
@@ -1194,7 +1164,6 @@ class Attention(torch.nn.Module):
 
 
 class top_Block(nn.Module):
-
     def __init__(
         self,
         dim,
@@ -1210,9 +1179,7 @@ class top_Block(nn.Module):
         self.num_heads = num_heads
         self.mlp_ratio = mlp_ratio
 
-        self.attn = Attention(
-            dim, key_dim=key_dim, num_heads=num_heads, attn_ratio=attn_ratio
-        )
+        self.attn = Attention(dim, key_dim=key_dim, num_heads=num_heads, attn_ratio=attn_ratio)
 
         # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
         self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
@@ -1252,9 +1219,7 @@ class TopBasicLayer(nn.Module):
                     mlp_ratio=mlp_ratio,
                     attn_ratio=attn_ratio,
                     drop=drop,
-                    drop_path=(
-                        drop_path[i] if isinstance(drop_path, list) else drop_path
-                    ),
+                    drop_path=(drop_path[i] if isinstance(drop_path, list) else drop_path),
                 )
             )
         self.conv = nn.Conv2d(embedding_dim, sum(ouc_list), 1)
@@ -1274,51 +1239,47 @@ class AdvPoolFusion(nn.Module):
         else:
             self.pool = nn.functional.adaptive_avg_pool2d
 
-        N, C, H, W = x2.shape
+        _N, _C, H, W = x2.shape
         output_size = np.array([H, W])
         x1 = self.pool(x1, output_size)
 
         return torch.cat([x1, x2], 1)
 
+
 class DSC(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1, act=True):
-        super(DSC, self).__init__()
-        
+        super().__init__()
+
         # Hàm kích hoạt mặc định của YOLOv8 là SiLU (Swish)
         # Nếu act=False thì dùng nn.Identity() (không làm gì cả, giữ nguyên đặc trưng)
         activation = nn.SiLU() if act else nn.Identity()
-        
+
         # BƯỚC 1: DEPTHWISE CONVOLUTION (DWConv)
-        # Điểm mấu chốt ở đây là tham số: groups = in_channels
+        # Điểm mấu chốt ở đây là than số: groups = in_channels
         # Nó bắt buộc PyTorch phải tách riêng từng channel ra để tính toán độc lập
         self.depthwise = nn.Sequential(
             nn.Conv2d(
-                in_channels=in_channels, 
-                out_channels=in_channels, # Số lượng kênh ra bằng số lượng kênh vào
-                kernel_size=kernel_size, 
-                stride=stride, 
-                padding=padding, 
-                groups=in_channels,       # <--- ĐÂY LÀ CHÌA KHÓA TOÁN HỌC!
-                bias=False
+                in_channels=in_channels,
+                out_channels=in_channels,  # Số lượng kênh ra bằng số lượng kênh vào
+                kernel_size=kernel_size,
+                stride=stride,
+                padding=padding,
+                groups=in_channels,  # <--- ĐÂY LÀ CHÌA KHÓA TOÁN HỌC!
+                bias=False,
             ),
             nn.BatchNorm2d(in_channels),
-            activation
+            activation,
         )
-        
+
         # BƯỚC 2: POINTWISE CONVOLUTION (PWConv)
         # Sử dụng kernel kích thước cố định là 1x1 để trộn thông tin xuyên kênh
         # và thay đổi số lượng kênh đầu ra theo ý muốn (out_channels)
         self.pointwise = nn.Sequential(
             nn.Conv2d(
-                in_channels=in_channels, 
-                out_channels=out_channels, 
-                kernel_size=1, 
-                stride=1, 
-                padding=0, 
-                bias=False
+                in_channels=in_channels, out_channels=out_channels, kernel_size=1, stride=1, padding=0, bias=False
             ),
             nn.BatchNorm2d(out_channels),
-            activation
+            activation,
         )
 
     def forward(self, x):
@@ -1326,23 +1287,24 @@ class DSC(nn.Module):
         x = self.depthwise(x)
         x = self.pointwise(x)
         return x
-    
+
+
 class PConv1x1(nn.Module):
     def __init__(self, inp, oup, n_div=4):
         super().__init__()
         # Chia làm 2 nhánh theo tỷ lệ n_div
-        self.dim_conv = max(1, inp // n_div) # Đảm bảo ít nhất có 1 kênh đem đi conv
+        self.dim_conv = max(1, inp // n_div)  # Đảm bảo ít nhất có 1 kênh đem đi conv
         self.dim_untouched = inp - self.dim_conv
-        
+
         # Tính toán số kênh đầu ra cho 2 nhánh sao cho tổng bằng oup
         # Nhánh 1 (tích chập) sẽ gánh một nửa oup, nhánh 2 (giữ nguyên/linear) gánh nửa còn lại
         self.oup_conv = max(1, oup // n_div)
         self.oup_untouched = oup - self.oup_conv
-        
+
         # Nhánh 1: Tích chập thay đổi số kênh
         self.partial_conv = nn.Conv2d(self.dim_conv, self.oup_conv, kernel_size=1, bias=False)
-        
-        # Nhánh 2: Nếu số kênh đầu vào và đầu ra của nhánh 2 khác nhau, 
+
+        # Nhánh 2: Nếu số kênh đầu vào và đầu ra của nhánh 2 khác nhau,
         # dùng một lớp Conv 1x1 siêu nhẹ (hoặc AvgPool) để điều chỉnh, không để giữ nguyên thuần túy
         if self.dim_untouched != self.oup_untouched:
             self.identity_adjust = nn.Conv2d(self.dim_untouched, self.oup_untouched, kernel_size=1, bias=False)
@@ -1352,33 +1314,35 @@ class PConv1x1(nn.Module):
     def forward(self, x):
         # Chia tách kênh theo đầu vào
         x1, x2 = torch.split(x, [self.dim_conv, self.dim_untouched], dim=1)
-        
+
         # Xử lý nhánh 1 (Tích chập)
         x1 = self.partial_conv(x1)
-        
+
         # Xử lý nhánh 2 (Điều chỉnh số kênh cho khớp đầu ra)
         x2 = self.identity_adjust(x2)
-        
+
         # Ghép lại với nhau -> Tổng số kênh chắc chắn bằng oup
         return torch.cat((x1, x2), dim=1)
+
+
 class Inject_PConv(nn.Module):
     def __init__(self, inp: int, oup: int, global_inp: list, flag: int) -> None:
         super().__init__()
         self.global_inp = global_inp
         self.flag = flag
         g_inp = global_inp[self.flag]
-        
+
         # THAY THẾ: Sử dụng PConv thay cho Conv 1x1 truyền thống giúp nén mạng
         self.local_embedding = PConv1x1(inp, oup)
         self.global_embedding = PConv1x1(g_inp, oup)
         self.global_act = PConv1x1(g_inp, oup)
-        
-        self.act = h_sigmoid() # Giữ nguyên hàm kích hoạt của Gold-YOLO
+
+        self.act = h_sigmoid()  # Giữ nguyên hàm kích hoạt của Gold-YOLO
 
     def forward(self, x):
         x_l, x_g = x
-        B, C, H, W = x_l.shape
-        g_B, g_C, g_H, g_W = x_g.shape
+        _B, _C, H, W = x_l.shape
+        _g_B, _g_C, g_H, _g_W = x_g.shape
         use_pool = H < g_H
 
         gloabl_info = x_g.split(self.global_inp, dim=1)[self.flag]
@@ -1394,25 +1358,21 @@ class Inject_PConv(nn.Module):
             sig_act = avg_pool(global_act, output_size)
             global_feat = avg_pool(global_feat, output_size)
         else:
-            sig_act = F.interpolate(
-                self.act(global_act), size=(H, W), mode="bilinear", align_corners=False
-            )
-            global_feat = F.interpolate(
-                global_feat, size=(H, W), mode="bilinear", align_corners=False
-            )
+            sig_act = F.interpolate(self.act(global_act), size=(H, W), mode="bilinear", align_corners=False)
+            global_feat = F.interpolate(global_feat, size=(H, W), mode="bilinear", align_corners=False)
 
         # Trộn đặc trưng 2 ngõ vào (Giữ nguyên logic của Gold-YOLO)
         out = local_feat * sig_act + global_feat
         return out
-    
+
+
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
+from torch import nn
+
 
 class BiLevelRoutingAttention(nn.Module):
-    """
-    Bi-level Routing Attention (BRA) - Đã sửa lỗi định tuyến thu thập mã Token bằng Torch.Gather
-    """
+    """Bi-level Routing Attention (BRA) - Đã sửa lỗi định tuyến thu thập mã Token bằng Torch.Gather."""
+
     def __init__(self, dim, num_heads=8, n_win=7, topk=4, qkv_bias=True, qk_scale=None, side_dwconv=3):
         super().__init__()
         self.dim = dim
@@ -1420,7 +1380,7 @@ class BiLevelRoutingAttention(nn.Module):
         self.head_dim = dim // num_heads
         self.n_win = n_win
         self.topk = topk
-        self.scale = qk_scale or self.head_dim ** -0.5
+        self.scale = qk_scale or self.head_dim**-0.5
 
         # Gom bộ chiếu QKV thành 1 tầng Linear tuyến tính tăng tốc độ xử lý
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
@@ -1428,33 +1388,30 @@ class BiLevelRoutingAttention(nn.Module):
         self.router_linear = nn.Linear(dim, dim)
 
         if side_dwconv > 0:
-            self.dwconv = nn.Conv2d(dim, dim, kernel_size=side_dwconv, 
-                                    padding=side_dwconv // 2, groups=dim)
+            self.dwconv = nn.Conv2d(dim, dim, kernel_size=side_dwconv, padding=side_dwconv // 2, groups=dim)
         else:
             self.dwconv = None
 
     def forward(self, x):
-        """
-        Input: x có kích thước [B, H, W, C]
-        """
+        """Input: x có kích thước [B, H, W, C]."""
         B, H, W, C = x.shape
         S = self.n_win
-        
+
         # 1. TÍNH TOÁN PADDING ĐỘNG ĐỂ CHIA HẾT CHO S (CỨU LỖI RUNTIME SHAPE)
         pad_h = (S - H % S) % S
         pad_w = (S - W % S) % S
-        
+
         if pad_h > 0 or pad_w > 0:
             # Thực hiện thêm viền đệm (Padding) zero vào phía sau các chiều H và W
-            x = F.pad(x, (0, 0, 0, pad_w, 0, pad_h)) # Định dạng pad: (C_trước, C_sau, W_trước, W_sau, H_trước, H_sau)
+            x = F.pad(x, (0, 0, 0, pad_w, 0, pad_h))  # Định dạng pad: (C_trước, C_sau, W_trước, W_sau, H_trước, H_sau)
             _, H_pad, W_pad, _ = x.shape
         else:
             H_pad, W_pad = H, W
-            
+
         window_size_h = H_pad // S
         window_size_w = W_pad // S
         n_tokens_per_win = window_size_h * window_size_w
-        
+
         # Nhánh tăng cường vị trí cục bộ bằng DWConv
         if self.dwconv is not None:
             x_conv = x.permute(0, 3, 1, 2).contiguous()
@@ -1463,66 +1420,103 @@ class BiLevelRoutingAttention(nn.Module):
             x = x + x_conv
 
         # Chiếu ma trận tách biệt Q, K, V
-        qkv = self.qkv(x) 
-        q, k, v = qkv.chunk(3, dim=-1) 
+        qkv = self.qkv(x)
+        q, k, v = qkv.chunk(3, dim=-1)
 
         # Phân chia cấu trúc không gian thành các ô cửa sổ độc lập (Window Partition)
         # Bấy giờ H_pad và W_pad chắc chắn chia hết cho S (n_win) nên không bao giờ lỗi nữa!
-        q_win = q.view(B, S, window_size_h, S, window_size_w, C).permute(0, 1, 3, 2, 4, 5).contiguous().view(B, S*S, n_tokens_per_win, C)
-        k_win = k.view(B, S, window_size_h, S, window_size_w, C).permute(0, 1, 3, 2, 4, 5).contiguous().view(B, S*S, n_tokens_per_win, C)
-        v_win = v.view(B, S, window_size_h, S, window_size_w, C).permute(0, 1, 3, 2, 4, 5).contiguous().view(B, S*S, n_tokens_per_win, C)
-        
+        q_win = (
+            q.view(B, S, window_size_h, S, window_size_w, C)
+            .permute(0, 1, 3, 2, 4, 5)
+            .contiguous()
+            .view(B, S * S, n_tokens_per_win, C)
+        )
+        k_win = (
+            k.view(B, S, window_size_h, S, window_size_w, C)
+            .permute(0, 1, 3, 2, 4, 5)
+            .contiguous()
+            .view(B, S * S, n_tokens_per_win, C)
+        )
+        v_win = (
+            v.view(B, S, window_size_h, S, window_size_w, C)
+            .permute(0, 1, 3, 2, 4, 5)
+            .contiguous()
+            .view(B, S * S, n_tokens_per_win, C)
+        )
+
         # 2. ĐỊNH TUYẾN CẤP ĐỘ VÙNG (Region-level routing)
-        q_r = self.router_linear(q_win.mean(dim=2)) 
-        k_r = self.router_linear(k_win.mean(dim=2)) 
-        
+        q_r = self.router_linear(q_win.mean(dim=2))
+        k_r = self.router_linear(k_win.mean(dim=2))
+
         router_attn = (q_r @ k_r.transpose(-2, -1)) * self.scale
-        router_attn = router_attn.softmax(dim=-1) 
-        
-        topk_attn, topk_indices = torch.topk(router_attn, k=self.topk, dim=-1) 
-        
+        router_attn = router_attn.softmax(dim=-1)
+
+        _topk_attn, topk_indices = torch.topk(router_attn, k=self.topk, dim=-1)
+
         # 3. THU THẬP TOKEN TỪ CÁC VÙNG ĐƯỢC CHỈ ĐỊNH
         gather_indices = topk_indices.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, -1, n_tokens_per_win, C)
-        
-        k_win_expanded = k_win.unsqueeze(1).expand(-1, S*S, -1, -1, -1)
-        v_win_expanded = v_win.unsqueeze(1).expand(-1, S*S, -1, -1, -1)
-        
-        k_routed = torch.gather(k_win_expanded, dim=2, index=gather_indices).flatten(2, 3) 
-        v_routed = torch.gather(v_win_expanded, dim=2, index=gather_indices).flatten(2, 3) 
+
+        k_win_expanded = k_win.unsqueeze(1).expand(-1, S * S, -1, -1, -1)
+        v_win_expanded = v_win.unsqueeze(1).expand(-1, S * S, -1, -1, -1)
+
+        k_routed = torch.gather(k_win_expanded, dim=2, index=gather_indices).flatten(2, 3)
+        v_routed = torch.gather(v_win_expanded, dim=2, index=gather_indices).flatten(2, 3)
 
         # 4. TÍNH TOÁN ĐA ĐẦU CHÚ Ý CHI TIẾT (Token-to-Token Attention)
-        q_win = q_win.view(B, S*S, n_tokens_per_win, self.num_heads, self.head_dim).permute(0, 1, 3, 2, 4)
-        k_routed = k_routed.view(B, S*S, self.topk * n_tokens_per_win, self.num_heads, self.head_dim).permute(0, 1, 3, 2, 4)
-        v_routed = v_routed.view(B, S*S, self.topk * n_tokens_per_win, self.num_heads, self.head_dim).permute(0, 1, 3, 2, 4)
+        q_win = q_win.view(B, S * S, n_tokens_per_win, self.num_heads, self.head_dim).permute(0, 1, 3, 2, 4)
+        k_routed = k_routed.view(B, S * S, self.topk * n_tokens_per_win, self.num_heads, self.head_dim).permute(
+            0, 1, 3, 2, 4
+        )
+        v_routed = v_routed.view(B, S * S, self.topk * n_tokens_per_win, self.num_heads, self.head_dim).permute(
+            0, 1, 3, 2, 4
+        )
 
         attn = (q_win @ k_routed.transpose(-2, -1)) * self.scale
         attn = attn.softmax(dim=-1)
-        
-        out = (attn @ v_routed).permute(0, 1, 3, 2, 4).reshape(B, S*S, n_tokens_per_win, C)
-        
+
+        out = (attn @ v_routed).permute(0, 1, 3, 2, 4).reshape(B, S * S, n_tokens_per_win, C)
+
         # 5. KHÔI PHỤC ĐỊNH DẠNG KHÔNG GIAN VÀ CẮT BỎ PADDING THỪA ĐỂ TRẢ LẠI ĐÚNG SHAPE GỐC
         out = out.view(B, S, S, window_size_h, window_size_w, C).permute(0, 1, 3, 2, 4, 5).reshape(B, H_pad, W_pad, C)
-        
+
         if pad_h > 0 or pad_w > 0:
-            out = out[:, :H, :W, :].contiguous() # Cắt bỏ phần rìa ảnh ảo đã đệm ban đầu
-            
+            out = out[:, :H, :W, :].contiguous()  # Cắt bỏ phần rìa ảnh ảo đã đệm ban đầu
+
         out = self.output_linear(out)
         return out
+
 
 # ==========================================
 # 2. KHỐI BIFOMERBLOCK HOÀN CHỈNH
 # ==========================================
 class BiFormerBlock(nn.Module):
-    def __init__(self, dim, num_heads, n_win=7, topk=4, mlp_ratio=4., qkv_bias=True, qk_scale=None,
-                 drop=0., drop_path=0., norm_layer=nn.LayerNorm, side_dwconv=3):
+    def __init__(
+        self,
+        dim,
+        num_heads,
+        n_win=7,
+        topk=4,
+        mlp_ratio=4.0,
+        qkv_bias=True,
+        qk_scale=None,
+        drop=0.0,
+        drop_path=0.0,
+        norm_layer=nn.LayerNorm,
+        side_dwconv=3,
+    ):
         super().__init__()
         self.norm1 = norm_layer(dim)
         self.attn = BiLevelRoutingAttention(
-            dim=dim, num_heads=num_heads, n_win=n_win, topk=topk,
-            qkv_bias=qkv_bias, qk_scale=qk_scale, side_dwconv=side_dwconv
+            dim=dim,
+            num_heads=num_heads,
+            n_win=n_win,
+            topk=topk,
+            qkv_bias=qkv_bias,
+            qk_scale=qk_scale,
+            side_dwconv=side_dwconv,
         )
-        
-        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+
+        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
         self.norm2 = norm_layer(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Ml_p(in_features=dim, hidden_features=mlp_hidden_dim, drop=drop)
@@ -1530,7 +1524,7 @@ class BiFormerBlock(nn.Module):
     def forward(self, x):
         is_channels_first = False
         if len(x.shape) == 4 and x.shape[1] != x.shape[2] and x.shape[1] != x.shape[3]:
-            B, C, H, W = x.shape
+            _B, _C, _H, _W = x.shape
             x = x.permute(0, 2, 3, 1).contiguous()
             is_channels_first = True
 
@@ -1541,11 +1535,12 @@ class BiFormerBlock(nn.Module):
             x = x.permute(0, 3, 1, 2).contiguous()
         return x
 
+
 # ==========================================
 # 3. MODULE KẾT HỢP DÀNH CHO YOLO (YAML Wrapper)
 # ==========================================
 class BiFormer(nn.Module):
-    def __init__(self, c1, c2, num_heads=8, n_win=7, topk=4, mlp_ratio=4.):
+    def __init__(self, c1, c2, num_heads=8, n_win=7, topk=4, mlp_ratio=4.0):
         super().__init__()
         self.conv_match = nn.Conv2d(c1, c2, kernel_size=1) if c1 != c2 else nn.Identity()
         self.block = BiFormerBlock(dim=c2, num_heads=num_heads, n_win=n_win, topk=topk, mlp_ratio=mlp_ratio)
@@ -1553,9 +1548,10 @@ class BiFormer(nn.Module):
     def forward(self, x):
         x = self.conv_match(x)
         return self.block(x)
-    
+
+
 class Ml_p(nn.Module):
-    def __init__(self, in_features, hidden_features=None, out_features=None, drop=0.):
+    def __init__(self, in_features, hidden_features=None, out_features=None, drop=0.0):
         super().__init__()
         out_features = out_features or in_features
         hidden_features = hidden_features or in_features
@@ -1568,16 +1564,16 @@ class Ml_p(nn.Module):
         return self.drop(self.fc2(self.drop(self.act(self.fc1(x)))))
 
 
-
-#SCOPE-YOLO
+# SCOPE-YOLO
 import torch
-import torch.nn as nn
+from torch import nn
+
 
 class SpatioChannelGate(nn.Module):
+    """Triển khai A_s(·): Cổng chọn lọc kết hợp Không gian - Kênh (Spatio-channel joint gating) Giúp ức chế nhiễu nền và
+    nhấn mạnh ranh giới cấu trúc của tháp điện.
     """
-    Triển khai A_s(·): Cổng chọn lọc kết hợp Không gian - Kênh (Spatio-channel joint gating)
-    Giúp ức chế nhiễu nền và nhấn mạnh ranh giới cấu trúc của tháp điện.
-    """
+
     def __init__(self, channels):
         super().__init__()
         # Nhánh hiệu chuẩn kênh (Channel Re-calibration)
@@ -1586,13 +1582,10 @@ class SpatioChannelGate(nn.Module):
             nn.Conv2d(channels, channels // 4, kernel_size=1, bias=False),
             nn.ReLU(inplace=True),
             nn.Conv2d(channels // 4, channels, kernel_size=1, bias=False),
-            nn.Sigmoid()
+            nn.Sigmoid(),
         )
         # Nhánh chọn lọc không gian (Spatial Selection)
-        self.spatial_gate = nn.Sequential(
-            nn.Conv2d(channels, 1, kernel_size=7, padding=3, bias=False),
-            nn.Sigmoid()
-        )
+        self.spatial_gate = nn.Sequential(nn.Conv2d(channels, 1, kernel_size=7, padding=3, bias=False), nn.Sigmoid())
 
     def forward(self, x):
         # Áp dụng cơ chế Attention theo Kênh và Không gian
@@ -1606,46 +1599,45 @@ class CFABlock(nn.Module):
     def __init__(self, in_channels, out_channels, scales=(1, 3, 5)):
         super().__init__()
         self.scales = scales
-        
+
         # 1. \Phi_s(·): Chuỗi tích chập với các trường tiếp nhận khác nhau (Dilated Convolutions)
         # Sử dụng dilation rates (1, 3, 5) để mở rộng trường tiếp nhận mà không làm giảm độ phân giải
-        self.phi_branches = nn.ModuleList([
-            nn.Sequential(
-                nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=d, dilation=d, bias=False),
-                nn.BatchNorm2d(out_channels),
-                nn.SiLU(inplace=True)  # YOLO thường chuộng SiLU
-            ) for d in scales
-        ])
-        
+        self.phi_branches = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=d, dilation=d, bias=False),
+                    nn.BatchNorm2d(out_channels),
+                    nn.SiLU(inplace=True),  # YOLO thường chuộng SiLU
+                )
+                for d in scales
+            ]
+        )
+
         # 2. A_s(·): Cổng kết hợp không gian - kênh cho TỪNG nhánh (tỷ lệ)
-        self.gate_branches = nn.ModuleList([
-            SpatioChannelGate(out_channels) for _ in scales
-        ])
-        
+        self.gate_branches = nn.ModuleList([SpatioChannelGate(out_channels) for _ in scales])
+
         # 3. Mạng cổng (Gating Network) sinh ra trọng số \alpha_s thích ứng
         # Ràng buộc: \sum \alpha_s = 1 và \alpha_s > 0 (sử dụng hàm Softmax)
         self.alpha_net = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Conv2d(in_channels, len(scales), kernel_size=1),
-            nn.Softmax(dim=1) 
+            nn.AdaptiveAvgPool2d(1), nn.Conv2d(in_channels, len(scales), kernel_size=1), nn.Softmax(dim=1)
         )
-        
+
     def forward(self, x):
         # Tính toán trọng số thích ứng \alpha_s cho từng scale
         # Shape của alphas: (Batch, Số_lượng_scale, 1, 1)
         alphas = self.alpha_net(x)
-        
+
         out = 0
         for i in range(len(self.scales)):
             # Bước 1: Đi qua chuỗi tích chập \Phi_s(X)
             phi_x = self.phi_branches[i](x)
-            
+
             # Bước 2: Đi qua cổng chọn lọc A_s(...)
             a_x = self.gate_branches[i](phi_x)
-            
+
             # Bước 3: Nhân với trọng số thích ứng \alpha_s và cộng dồn (Tổng hợp \sum)
             # Trích xuất alpha_s tương ứng cho nhánh hiện tại
-            alpha_s = alphas[:, i:i+1, :, :] 
+            alpha_s = alphas[:, i : i + 1, :, :]
             out += alpha_s * a_x
-            
+
         return out
